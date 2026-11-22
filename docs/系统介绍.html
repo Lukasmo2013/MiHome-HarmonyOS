@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiHome · 系统介绍</title>
+<style>
+  :root {
+    --primary: #3E9AA6;
+    --primary-dark: #2F8C96;
+    --primary-soft: #EAF5F6;
+    --text: #172226;
+    --sub: #6E8083;
+    --border: #E2EDED;
+    --bg: #FFFFFF;
+    --page: #F7FBFB;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text);
+    font-family: "HarmonyOS Sans SC", "Noto Sans CJK SC", "Noto Sans SC",
+                 "Source Han Sans SC", -apple-system, "PingFang SC", sans-serif;
+    font-size: 15px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px 80px; }
+
+  /* 顶部封面 */
+  header {
+    background: linear-gradient(160deg, #F0FAFA 0%, #FFFFFF 55%, #F6FBFB 100%);
+    border-bottom: 1px solid var(--border);
+  }
+  .hero { max-width: 1080px; margin: 0 auto; padding: 56px 24px 40px; }
+  .badge-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+  .badge {
+    font-size: 12px; padding: 4px 12px; border-radius: 999px;
+    background: #FFFFFF; border: 1px solid var(--border); color: var(--sub);
+  }
+  .badge.on { background: var(--primary-soft); border-color: #BFE0E2; color: var(--primary-dark); }
+  h1 { font-size: 40px; line-height: 1.2; margin: 0 0 10px; letter-spacing: -0.5px; }
+  h1 span { color: var(--primary); }
+  .lede { font-size: 16px; color: var(--sub); max-width: 720px; margin: 0; }
+  .meta { margin-top: 22px; font-size: 12.5px; color: var(--sub); display: flex; gap: 24px; flex-wrap: wrap; }
+
+  /* 目录 */
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(255,255,255,.86);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+  }
+  nav .inner { max-width: 1080px; margin: 0 auto; padding: 12px 24px; display: flex; gap: 20px; overflow-x: auto; }
+  nav a { color: var(--sub); text-decoration: none; font-size: 13.5px; white-space: nowrap; }
+  nav a:hover { color: var(--primary-dark); }
+
+  section { margin-top: 56px; }
+  h2 {
+    font-size: 24px; margin: 0 0 6px; letter-spacing: -0.2px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  h2::before {
+    content: ''; width: 4px; height: 20px; border-radius: 2px; background: var(--primary);
+    display: inline-block;
+  }
+  .section-sub { color: var(--sub); font-size: 14px; margin: 0 0 22px; }
+  h3 { font-size: 16px; margin: 28px 0 8px; }
+  p { margin: 10px 0; }
+
+  /* 卡片与截图 */
+  .shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  .shots.two { grid-template-columns: repeat(2, 1fr); }
+  figure { margin: 0; }
+  figure img {
+    width: 100%; display: block; border-radius: 20px;
+    border: 1px solid var(--border);
+    box-shadow: 0 12px 32px rgba(62,154,166,.12);
+    background: #fff;
+  }
+  figure.wide img { border-radius: 18px; }
+  figcaption { font-size: 12.5px; color: var(--sub); margin-top: 10px; text-align: center; }
+
+  .panel {
+    background: #fff; border: 1px solid var(--border); border-radius: 16px;
+    padding: 22px 24px; box-shadow: 0 6px 20px rgba(62,154,166,.06);
+  }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+
+  ul.clean { margin: 8px 0 0; padding-left: 20px; }
+  ul.clean li { margin: 6px 0; }
+  ul.clean li b { font-weight: 600; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; background: #fff; }
+  table caption { text-align: left; color: var(--sub); font-size: 13px; padding-bottom: 8px; }
+  th, td { border: 1px solid var(--border); padding: 10px 14px; text-align: left; vertical-align: top; }
+  th { background: #F4FAFA; font-weight: 600; font-size: 13.5px; }
+  code {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.8px; background: #F2F8F8; border: 1px solid var(--border);
+    border-radius: 5px; padding: 1px 6px; color: var(--primary-dark);
+  }
+  pre {
+    background: #F7FBFB; border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 18px; overflow-x: auto; font-size: 12.8px; line-height: 1.7;
+  }
+  pre code { background: none; border: none; padding: 0; color: #2C4A4E; }
+
+  .note {
+    border-left: 3px solid var(--primary); background: var(--primary-soft);
+    border-radius: 0 12px 12px 0; padding: 14px 18px; font-size: 13.5px; color: #2C4A4E;
+  }
+  .warn {
+    border-left: 3px solid #E0A33A; background: #FDF7EC;
+    border-radius: 0 12px 12px 0; padding: 14px 18px; font-size: 13.5px; color: #6B5322;
+  }
+
+  footer {
+    margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--border);
+    color: var(--sub); font-size: 12.5px;
+  }
+  footer a { color: var(--primary-dark); }
+
+  @media (max-width: 900px) {
+    .shots, .shots.two, .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    h1 { font-size: 30px; }
+    .hero { padding: 40px 20px 28px; }
+    .wrap { padding: 0 18px 56px; }
+    .shots { max-width: 420px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hero">
+    <div class="badge-row">
+      <span class="badge on">HarmonyOS NEXT</span>
+      <span class="badge">ArkTS / ArkUI</span>
+      <span class="badge">API 26</span>
+      <span class="badge">桌面卡片 1*2 · 2*2 · 2*4 · 4*4</span>
+      <span class="badge">GPL-3.0-or-later</span>
+    </div>
+    <h1>MiHome <span>· 鸿蒙版米家客户端</span></h1>
+    <p class="lede">
+      包名 <code>com.mihome.client</code>。用小米官方网页完成账号授权，App 不接触明文密码；
+      登录后管理家庭、房间与米家设备，并可把任意家电做成桌面卡片。
+      界面遵循 HarmonyOS 7 雾玻璃 · 浅蓝绿设计语言：纯白底、深墨字、轻描边。
+    </p>
+    <div class="meta">
+      <span>版本 2.1.0（versionCode 2010004）</span>
+      <span>版权 莫洁安</span>
+      <span>许可 GPL-3.0-or-later</span>
+    </div>
+  </div>
+</header>
+
+<nav>
+  <div class="inner">
+    <a href="#shots">界面总览</a>
+    <a href="#card">桌面卡片</a>
+    <a href="#login">网页登录</a>
+    <a href="#features">功能总览</a>
+    <a href="#arch">技术架构</a>
+    <a href="#build">构建与安装</a>
+    <a href="#limits">已知限制</a>
+  </div>
+</nav>
+
+<div class="wrap">
+
+  <section id="shots">
+    <h2>界面总览</h2>
+    <p class="section-sub">首页、我的、桌面卡片管理中心 —— 三处主入口的当前视觉。</p>
+    <div class="shots">
+      <figure>
+        <img src="images/home.png" alt="首页：设备网格与概览">
+        <figcaption>首页 · 家庭入口 / 概览 / 设备网格</figcaption>
+      </figure>
+      <figure>
+        <img src="images/mine.png" alt="我的页：桌面卡片入口">
+        <figcaption>我的 · 桌面卡片入口与功能列表</figcaption>
+      </figure>
+      <figure>
+        <img src="images/card-manager.png" alt="桌面卡片管理中心">
+        <figcaption>桌面卡片 · 选设备 / 选内容 / 选规格</figcaption>
+      </figure>
+    </div>
+    <div class="note" style="margin-top:22px">
+      以上为按真实设计 token（<code>DesignTokens.ets</code>）与页面结构绘制的界面预览图，
+      由 <code>tools/gen_docs_previews.py</code> 生成，与实际运行的布局、字号、配色一致；
+      不含真实账号与设备数据。
+    </div>
+  </section>
+
+  <section id="card">
+    <h2>桌面卡片服务</h2>
+    <p class="section-sub">把一台家电钉在桌面上：看状态、点一下就能开关，四种规格共用一套 token。</p>
+    <figure class="wide">
+      <img src="images/widgets.png" alt="桌面卡片四种规格">
+      <figcaption>1*2 扁条 / 2*2 标准方形 / 2*4 宽卡 / 4*4 大方卡</figcaption>
+    </figure>
+
+    <div class="grid-2" style="margin-top:24px">
+      <div class="panel">
+        <h3 style="margin-top:0">配置入口（两处）</h3>
+        <ul class="clean">
+          <li><b>我的 → 桌面卡片</b>：完整管理中心，选择设备、展示内容、规格与标题，实时预览后一键添加到桌面。</li>
+          <li><b>首页长按设备卡片 → 添加到桌面（卡片服务）</b>：带上当前设备直接进配置面板。</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">管理能力</h3>
+        <ul class="clean">
+          <li>列出桌面已添加的卡片：设备、展示内容、规格、在线状态。</li>
+          <li>载入原配置重新调整、单张刷新、全部刷新。</li>
+          <li>「设为默认」：系统卡片面板直接添加时自动套用这套样式。</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>可选的展示内容</h3>
+    <table>
+      <tr><th style="width:140px">内容项</th><th>主区域显示</th><th>适用场景</th></tr>
+      <tr><td>开关状态</td><td>已开启 / 已关闭</td><td>灯、插座、风扇等有电源属性的设备</td></tr>
+      <tr><td>在线状态</td><td>在线 / 离线</td><td>关注设备是否掉线的场景</td></tr>
+      <tr><td>设备名称</td><td>设备名</td><td>纯标识型卡片</td></tr>
+      <tr><td>所在房间</td><td>房间名或「未分配房间」</td><td>多房间布点</td></tr>
+      <tr><td>设备型号</td><td>型号字符串</td><td>设备台账</td></tr>
+      <tr><td>自定义文字</td><td>自定义文案，留空回落设备名</td><td>提示语、备注</td></tr>
+    </table>
+
+    <h3>视觉与交互细节</h3>
+    <ul class="clean">
+      <li>白底 + 深墨主值 + 浅蓝绿点缀；离线只灰化状态点，卡片整体仍然清晰可读。</li>
+      <li>右上圆形电源键：<code>postCardAction({action:'call'})</code> 拉起 App 执行开关，失败回滚并 Toast 提示。</li>
+      <li>空卡不留白板，显示「打开 MiHome → 我的 → 桌面卡片」引导文案。</li>
+      <li>点击卡片进入设备详情；App 回到前台会同步最新状态并 <code>formProvider.updateForm</code> 刷新所有卡片。</li>
+    </ul>
+  </section>
+
+  <section id="login">
+    <h2>网页授权登录</h2>
+    <p class="section-sub">用小米官方页面完成账号密码、图形验证码与二次验证，App 只读取登录结果。</p>
+    <div class="shots two">
+      <figure>
+        <img src="images/login.png" alt="网页授权登录">
+        <figcaption>网页授权登录 · 官方页面 + 令牌提取状态</figcaption>
+      </figure>
+      <figure>
+        <img src="images/family.png" alt="家庭选择浮层">
+        <figcaption>家庭选择浮层 · 选中态与家庭管理</figcaption>
+      </figure>
+    </div>
+    <h3>令牌提取的四路兜底</h3>
+    <p>
+      小米登录成功后的回调页常常只剩一个 <code>ok</code> 字样。登录结束判定不依赖单一信号，
+      而是注入 <code>__miSnapshot</code> 定时读取页面 URL、标题、正文、<code>document.cookie</code> 与
+      <code>extension-pragma</code>，再由 <code>onLoadIntercept</code> / <code>onPageEnd</code> /
+      进度 100 / 500ms 轮询四路共同判定，任一命中即可提取令牌并写入 <code>MijiaAuthData</code>。
+    </p>
+    <div class="note">
+      顶部关闭按钮保留状态栏安全高度，不和状态栏重叠；底部同时提供「提取令牌」与「返回登录方式」，
+      网页白屏时也能随时退出。系统返回键同样可关闭网页层。
+    </div>
+  </section>
+
+  <section id="features">
+    <h2>功能总览</h2>
+    <p class="section-sub">基座来自米居 MiJu / 鸿米家，网页登录能力为本工程融合进来的部分。</p>
+    <table>
+      <tr><th style="width:150px">模块</th><th>能力</th></tr>
+      <tr><td>设备与控制</td><td>按 MIoT-Spec V2 动态渲染属性与动作；电源、亮度、色温、风速、模式等控件；下发失败回滚与提示。</td></tr>
+      <tr><td>实时状态</td><td>首页快捷开关 20s 轮询、详情页 15s 轮询，回页立即刷新；外部改动通过事件回读真值。</td></tr>
+      <tr><td>房间与家庭</td><td>家庭切换、房间分组、设备排序 / 隐藏 / 重命名、收藏。</td></tr>
+      <tr><td>智能与自动化</td><td>本地智能场景、定时任务、到期检查与提醒。</td></tr>
+      <tr><td>信息与提醒</td><td>云端消息、设备提醒、耗材到期（滤芯 / 刷头）。</td></tr>
+      <tr><td>桌面卡片</td><td>四种规格、六类展示内容、开关直控、批量刷新、默认样式。</td></tr>
+      <tr><td>外观</td><td>HarmonyOS 7 雾玻璃浅蓝绿主题，字体与字号可调，沉浸式状态栏。</td></tr>
+      <tr><td>数据</td><td>本地快照备份与恢复、局域网设备发现。</td></tr>
+    </table>
+  </section>
+
+  <section id="arch">
+    <h2>技术架构</h2>
+    <p class="section-sub">Stage 模型，无路由框架依赖，能力按层拆在 <code>entry/src/main/ets</code> 下。</p>
+    <div class="grid-3">
+      <div class="panel">
+        <h3 style="margin-top:0">页面层</h3>
+        <ul class="clean">
+          <li><code>pages/HomePage.ets</code>：首页 / 智能 / 信息 / 我的四个 tab，含家庭浮层与卡片配置面板。</li>
+          <li><code>pages/CardServicePage.ets</code>：桌面卡片管理中心。</li>
+          <li><code>pages/LoginPage.ets</code> + <code>components/WebLoginView.ets</code>：登录与网页授权。</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">服务与存储</h3>
+        <ul class="clean">
+          <li><code>services/CardFormService.ets</code>：卡片运行态查询、数据拼装、批量刷新。</li>
+          <li><code>storage/CardConfigStore.ets</code> / <code>CardStateStore.ets</code>：卡片配置与设备状态快照（preferences）。</li>
+          <li><code>oauth/WebLoginService.ets</code>：Cookie / pragma / URL 解析并写回鉴权数据。</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">卡片层</h3>
+        <ul class="clean">
+          <li><code>entryformability/MiHomeFormAbility.ets</code>：<code>onAddForm</code> / <code>onUpdateForm</code> / <code>onFormEvent</code>，三级回落保证不空白。</li>
+          <li><code>widget/pages/MiHomeDeviceCard.ets</code>：按规格切换版式与字号。</li>
+          <li><code>resources/base/profile/form_config.json</code>：四种 dimension 声明。</li>
+        </ul>
+      </div>
+    </div>
+    <h3>卡片数据链路</h3>
+    <pre><code>首页 / 管理中心选设备
+   ↓ 写入配置
+CardConfigStore（formId / default）
+   ↓
+CardStateStore（设备名称、房间、型号、在线、电源）
+   ↓ buildCardData()
+formBindingData → formProvider.updateForm(formId)
+   ↓
+MiHomeDeviceCard 渲染；点电源 → postCardAction(call)
+   ↓
+EntryAbility 解析 cardToggleDid → AppStorage.pendingCardToggleDid
+   ↓
+HomePage.consumePendingCardToggle() 执行开关并回写</code></pre>
+  </section>
+
+  <section id="build">
+    <h2>构建与安装</h2>
+    <p class="section-sub">命令行工具链（Command Line Tools + hvigorw）即可产出签名 HAP。</p>
+    <h3>从源码构建</h3>
+    <pre><code># 1. 依赖
+ohpm install
+
+# 2. 自动递增 versionCode 并编译
+python tools/auto_version.py
+hvigorw assembleHap
+
+# 3. 自签（需自备 p12 / cer / p7b）
+java -jar $SDK/openharmony/toolchains/lib/hap-sign-tool.jar sign-app \
+  -mode localSign -signAlg SHA256withECDSA -keyAlias app \
+  -appCertFile signing/app-cert-chain.cer -profileFile signing/mihome.p7b \
+  -inFile entry/build/default/outputs/default/entry-default-unsigned.hap \
+  -keystoreFile signing/app.p12 \
+  -outFile outputs/MiHome-com.mihome.client-signed.hap</code></pre>
+    <div class="warn">
+      本地自签证书在真机上通常会被系统拒绝（错误码 9568257 等）。要装到真机，
+      需在 DevEco Studio 中用华为账号为 <code>com.mihome.client</code> 自动签名；
+      侧载步骤见 <code>docs/侧载安装指南.md</code>。
+    </div>
+    <h3>安装到设备</h3>
+    <pre><code>hdc tconn &lt;设备IP&gt;:5555
+hdc file send outputs/MiHome-com.mihome.client-signed.hap /data/local/tmp/mihome.hap
+hdc shell bm install -r -p /data/local/tmp/mihome.hap</code></pre>
+    <h3>文档与自检</h3>
+    <ul class="clean">
+      <li><code>python tools/gen_docs_previews.py</code>：重新生成 <code>docs/images</code> 下的界面图。</li>
+      <li><code>node verify/check_fusion.mjs</code>：结构与关键实现自检（当前 78 项）。</li>
+    </ul>
+  </section>
+
+  <section id="limits">
+    <h2>已知限制与声明</h2>
+    <ul class="clean">
+      <li>第三方客户端，非小米官方产品；接口变动可能导致部分设备或功能不可用。</li>
+      <li>路由器类设备只提供提示入口，不做登录与控制。</li>
+      <li>桌面卡片依赖系统 FormKit，部分定制系统可能限制卡片刷新频率。</li>
+      <li>本项目沿用上游 GPL-3.0-or-later 许可，版权归 莫洁安；上游为
+        <a href="https://github.com/SKL-666666/MiHome-Client">米居 MiJu</a> 与
+        <a href="https://github.com/MrCashmere/miha_hm">鸿米家 miha_hm</a>。</li>
+    </ul>
+    <div class="note" style="margin-top:14px">
+      本页图片均由脚本生成，不含真实账号、设备或网络信息。
+    </div>
+  </section>
+
+  <footer>
+    MiHome · <code>com.mihome.client</code> · 版本 2.1.0 · 版权 莫洁安 ·
+    <a href="../README.md">返回 README</a>
+  </footer>
+</div>
+
+</body>
+</html>
