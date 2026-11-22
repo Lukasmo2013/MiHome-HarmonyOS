@@ -161,6 +161,8 @@ ok(cardFormAbilityCode.includes('CardConfigStore.readDefault') && cardFormAbilit
   '卡片：无 customize 时回落到默认设备，且空态有引导文案');
 ok(cardFormAbilityCode.includes("cfg.content === 'location'") && cardFormAbilityCode.includes('setFormNextRefreshTime'),
   '卡片：支持房间内容项与定时自刷新');
+ok(cardFormAbilityCode.includes('预览态') && cardFormAbilityCode.includes('const saved: CardConfig | null'),
+  '卡片：系统面板预览态也回落到真实设备，不再空白');
 ok(cardFormServiceCode.includes('static rememberDefault') && cardFormServiceCode.includes('CardFormService.rememberDefault(context'),
   '卡片：打开系统管理页前先记住默认设备');
 ok(homePage.includes('cardDevicePicker()') && homePage.includes('this.cardDeviceDid = device.did;'),

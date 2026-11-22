@@ -110,7 +110,29 @@ export default class MiHomeFormAbility extends FormExtensionAbility {
   }
 
   private buildBinding(formId: string): formBindingData.FormBindingData {
-    const config: CardConfig | null = CardConfigStore.read(this.context, formId);
+    const saved: CardConfig | null = CardConfigStore.read(this.context, formId);
+
+    // 预览态（系统「服务卡片」面板里渲染的那张）formId 为空、也没有 customize，
+    // 依次回落到默认配置 → 缓存里的首台设备，避免预览是一片空白。
+    let config: CardConfig | null = saved;
+    if (config === null) {
+      config = CardConfigStore.readDefault(this.context);
+    }
+    if (config === null) {
+      const firstState: CardDeviceState | null = CardStateStore.first(this.context);
+      if (firstState !== null) {
+        const s: CardDeviceState = firstState as CardDeviceState;
+        config = {
+          formId: '',
+          deviceDid: s.did,
+          deviceName: s.name,
+          content: 'power',
+          customText: '',
+          title: s.name,
+          dimensionText: '2*2'
+        };
+      }
+    }
 
     if (config === null) {
       // 没有任何配置：给出可读的引导态，而不是一张只有 "--" 的空白卡
