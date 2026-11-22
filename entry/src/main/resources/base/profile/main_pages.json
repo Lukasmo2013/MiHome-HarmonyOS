@@ -1,0 +1,17 @@
+{
+  "src": [
+    "pages/LoginPage",
+    "pages/HomePage",
+    "pages/FamilySelectPage",
+    "pages/SettingsPage",
+    "pages/AppearanceSettingsPage",
+    "pages/BackupRestorePage",
+    "pages/RoomsPage",
+    "pages/ConsumablesPage",
+    "pages/AboutPage",
+    "pages/FeedbackPage",
+    "pages/BackgroundCropPage",
+    "pages/FontManagePage",
+    "pages/SceneCreatePage"
+  ]
+}

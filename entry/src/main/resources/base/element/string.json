@@ -1,0 +1,28 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "小米家庭/MIoT 控制"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "MiHome"
+    },
+    {
+      "name": "MiHomeFormAbility_desc",
+      "value": "MiHome 设备卡片服务"
+    },
+    {
+      "name": "MiHomeCard_display_name",
+      "value": "MiHome 设备卡片"
+    },
+    {
+      "name": "MiHomeCard_desc",
+      "value": "可自定义设备与内容的桌面卡片，支持 1x2、2x2、2x4、4x4"
+    }
+  ]
+}

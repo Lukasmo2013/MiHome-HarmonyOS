@@ -1,0 +1,5499 @@
+/*
+ * 鸿米家（miha）— HarmonyOS NEXT native Xiaomi Home / MIoT control client.
+ *
+ * Copyright (C) 2026 莫洁安
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+import { common, Context } from '@kit.AbilityKit';
+import { SymbolGlyphModifier } from '@kit.ArkUI';
+import {
+  HdsNavigation,
+  HdsNavigationTitleMode,
+  ScrollEffectType,
+  HdsTabs,
+  HdsTabsController,
+  hdsMaterial
+} from '@kit.UIDesignKit';
+import { XiaomiDevice, XiaomiHome, XiaomiScene, InfoExcludeOption, LocalScene, ALL_HOMES_ID, ALL_HOMES_NAME } from '../models/XiaomiHomeModels';
+import { xiaomiDataService } from '../services/XiaomiDataService';
+import { LocalSceneStore } from '../storage/LocalSceneStore';
+import { FeedbackLogService } from '../services/FeedbackLogService';
+import { Logger } from '../utils/Logger';
+import { DataSourceState } from '../models/CacheState';
+import { XiaomiAuthError } from '../models/XiaomiErrors';
+import { MijiaMessageItem } from '../cloud/MijiaApiClient';
+import {
+  HwColor,
+  HwRadius,
+  HwSpace,
+  MijiaHeaderGradient,
+  MijiaOverviewCard,
+  MijiaOverviewCardPressed,
+  MijiaOverviewCardText,
+  MijiaOverviewCardValue,
+  MijiaSheetBackground,
+  MijiaCardBorder,
+  MijiaCardShadow
+} from '../utils/DesignTokens';
+import { isCelsiusUnit, celsiusToFahrenheit } from '../utils/TemperatureDisplay';
+import { translateMiotUnit } from '../components/CapabilityRenderer';
+import { IconCircleButton } from '../components/IconCircleButton';
+import { AppSettingsStore } from '../storage/AppSettingsStore';
+import { AppBackground } from '../components/AppBackground';
+import { DeviceDetailRouteParam, DeviceManageRouteParam } from '../models/NavRouteParams';
+import { DeviceController } from '../controllers/DeviceController';
+import { DevicePropertyParam, DevicePropertyResult } from '../controllers/DeviceTransport';
+import { MIoTSpecInstance } from '../models/MIotSpecModels';
+import { RoomStore, UserRoom } from '../storage/RoomStore';
+import { DeviceRemovalStore } from '../storage/DeviceRemovalStore';
+import { DeviceOverrideStore } from '../storage/DeviceOverrideStore';
+import { MessageReadStore } from '../storage/MessageReadStore';
+import { Haptic } from '../utils/Haptic';
+import { asBool, boolWriteValue } from '../utils/BoolValue';
+import { CardFormService } from '../services/CardFormService';
+
+const TITLE_BAR_HEIGHT_FREE: number = 137;
+const CONTENT_TOP_OFFSET: number = 137;
+const BOTTOM_BAR_HEIGHT: number = 56;
+const BOTTOM_BAR_MARGIN: number = 12;
+const INFO_CARD_HEIGHT: number = 128;
+const SIDE_BAR_WIDTH_DEFAULT: number = 96;
+const SIDE_BAR_WIDTH_MIN: number = 80;
+const SIDE_BAR_WIDTH_MAX: number = 320;
+const MAX_CONTENT_WIDTH: number = 1080;
+const ROOM_ALL_KEY: string = '__all_rooms__';
+const ROOM_UNROOMED_KEY: string = '__unroomed__';
+const CARD_DIMENSIONS: string[] = ['1*2', '2*2', '2*4', '4*4'];
+
+interface CardContentOption {
+  key: string;
+  label: string;
+}
+const CARD_CONTENT_OPTIONS: CardContentOption[] = [
+  { key: 'power', label: '电源状态' },
+  { key: 'online', label: '在线状态' },
+  { key: 'name', label: '设备名称' },
+  { key: 'model', label: '设备型号' },
+  { key: 'custom', label: '自定义文字' }
+];
+
+interface RoomCandidate {
+  key: string;
+  name: string;
+  roomId: string;
+  dids: string[];
+}
+
+interface RoomChip {
+  key: string;
+  name: string;
+  roomId: string;
+  dids: string[];
+  count: number;
+}
+
+interface InfoSpecProperty {
+  siid: number;
+  piid: number;
+  unit: string;
+}
+
+interface InfoPropertyTarget {
+  did: string;
+  name: string;
+  roomName: string;
+  siid: number;
+  piid: number;
+  unit: string;
+}
+
+interface InfoMetricRange {
+  min: number;
+  max: number;
+  count: number;
+  average: number;
+}
+
+interface InfoDeviceEntry {
+  did: string;
+  name: string;
+  roomName: string;
+  valueText: string;
+}
+
+interface InfoMetricResult {
+  range: InfoMetricRange;
+  entries: InfoDeviceEntry[];
+}
+
+interface InfoMetricCardConfig {
+  title: string;
+  rangeText: string;
+  moreText: string;
+}
+
+interface OverviewCardConfig {
+  title: string;
+  rangeText: string;
+  moreText: string;
+  sheetIndex: number;
+  icon: Resource;
+}
+
+interface AlertItem {
+  did: string;
+  deviceName: string;
+  roomName: string;
+  type: string;
+  title: string;
+  detail: string;
+  level: string;
+}
+
+interface AlertPropertyInfo {
+  siid: number;
+  piid: number;
+  used: boolean;
+  format: string;
+}
+
+@Entry
+@Component
+struct HomePage {
+  @StorageLink('cardsFromTop') cardsFromTop: boolean = true;
+  @StorageLink('homeSmoothSwitch') homeSmoothSwitch: boolean = false;
+  @StorageLink('fontMode') fontMode: string = 'system';
+  @StorageLink('fontFamilyEn') fontFamilyEn: string = 'system';
+  @StorageLink('fontFamilyZh') fontFamilyZh: string = 'system';
+
+  private appFontFamily(content: string): string {
+    if (this.fontMode !== 'custom') {
+      return '';
+    }
+    const family = this.hasCjk(content) ? this.fontFamilyZh : this.fontFamilyEn;
+    return family === 'system' || family.length === 0 ? '' : family;
+  }
+
+  private hasCjk(content: string): boolean {
+    for (let i = 0; i < content.length; i++) {
+      const code = content.charCodeAt(i);
+      if (code >= 0x4E00 && code <= 0x9FFF) {
+        return true;
+      }
+    }
+    return false;
+  }
+  @StorageLink('fontWeightMode') fontWeightMode: string = 'system';
+  @StorageLink('fontWeightValue') fontWeightValue: number = 400;
+
+  private appFontWeight(): number {
+    return this.fontWeightMode === 'custom' ? this.fontWeightValue : 400;
+  }
+
+  private textPrimaryColor(): string {
+    return this.isDarkMode ? '#EDF1F7' : '#1A1A1A';
+  }
+
+  private textSecondaryColor(): string {
+    return this.isDarkMode ? '#9BA8BC' : '#7A8089';
+  }
+  @Provide('pageInfos') pageInfos: NavPathStack = new NavPathStack();
+  private tabsController: HdsTabsController = new HdsTabsController();
+  private homeScroller: Scroller = new Scroller();
+  private mineScroller: Scroller = new Scroller();
+  private infoScroller: Scroller = new Scroller();
+  private smartScroller: Scroller = new Scroller();
+  private alertScroller: Scroller = new Scroller();
+  private allVisibleDevices: XiaomiDevice[] = [];
+  private infoFetching: boolean = false;
+  @StorageLink('selectedHomeId') selectedHomeId: string = '';
+  @StorageLink('selectedHomeName') selectedHomeName: string = '';
+  @StorageLink('homeSelectionVersion') @Watch('onHomeSelectionChanged') homeSelectionVersion: number = 0;
+  @State homes: XiaomiHome[] = [];
+  @State devices: XiaomiDevice[] = [];
+  @State loading: boolean = true;
+  @State statusMessage: string = '';
+  @State errorMessage: string = '';
+  @State dataState: DataSourceState = DataSourceState.ONLINE;
+  @State activeTab: number = 0;
+  @State accountUserId: string = '';
+  @State accountNickname: string = '';
+  @State accountAvatarUrl: string = '';
+  @StorageLink('hideOfflineDevices') @Watch('onHideOfflineDevicesChanged') hideOfflineDevices: boolean = false;
+  @StorageLink('dualColumnMode') dualColumnMode: boolean = false;
+  @StorageLink('autoMultiColumn') autoMultiColumn: boolean = false;
+  @StorageProp('isLargeScreen') isLargeScreen: boolean = false;
+  @StorageProp('is2in1') is2in1: boolean = false;
+  @StorageProp('isWearable') isWearable: boolean = false;
+  @StorageProp('currentWidthBreakpoint') @Watch('onBreakpointChange')
+  widthBp: WidthBreakpoint = WidthBreakpoint.WIDTH_SM;
+  @StorageProp('screenWidthVp') screenWidthVp: number = 0;
+  @StorageLink('pcLayoutEnabled') @Watch('onBreakpointChange') pcLayoutEnabled: boolean = false;
+  @State isWideScreen: boolean = false;
+  @State sideBarWidth: number = SIDE_BAR_WIDTH_DEFAULT;
+  @State dragHovered: boolean = false;
+  private dragStartWidth: number = SIDE_BAR_WIDTH_DEFAULT;
+  @StorageLink('temperatureFahrenheit') @Watch('onTemperatureUnitChanged') temperatureFahrenheit: boolean = false;
+  // 概览卡片显示开关（设置页控制）
+  @StorageLink('showOverviewCards') showOverviewCards: boolean = true;
+  @StorageProp('navigationBarHeight') navigationBarHeight: number = 0;
+  @StorageProp('isDarkMode') isDarkMode: boolean = false;
+  @StorageLink('infoExcludedDevices') infoExcludedDevices: string[] = [];
+  @StorageLink('backgroundImage') wallpaperImage: string = '';
+  @StorageLink('infoShowMoreContent') infoShowMoreContent: boolean = true;
+  @StorageLink('sortDevicesByRoom') @Watch('onSortDevicesByRoomChanged') sortDevicesByRoom: boolean = false;
+  @StorageProp('statusBarHeight') statusBarHeight: number = 0;
+  @StorageLink('defaultHomeTab') defaultHomeTab: string = 'home';
+  @StorageLink('infoRefreshInterval') @Watch('onInfoRefreshIntervalChanged') infoRefreshInterval: string = '30';
+  @State localRooms: UserRoom[] = [];
+  @State selectedRoomKey: string = ROOM_ALL_KEY;
+  @State roomChips: RoomChip[] = [];
+  // 快捷开关：did → 电源开关状态；未知的显示灰灯
+  @State quickPowerStates: Record<string, boolean> = {};
+  // 电源属性装载版本号：Map 本身不是状态，属性更新后靠它触发卡片重渲染
+  @State quickPowerVersion: number = 0;
+  private quickPowerProps: Map<string, AlertPropertyInfo> = new Map();
+  private quickSwitchTapHandled: boolean = false;  // 房间排序：长按拖动中（跟手偏移 + 交换动画）
+  @State draggingRoomKey: string = '';
+  @State roomDragDx: number = 0;
+  private roomDragConsumed: number = 0;
+  private roomChipWidths: Map<string, number> = new Map();
+  @State filteredDevices: XiaomiDevice[] = [];
+  @State searchKeyword: string = '';
+  @State favoriteDevices: string[] = [];
+  @State nameOverrides: Record<string, string> = {};
+  @State deviceSortMode: string = 'smart';
+  @State showRenameSheet: boolean = false;
+  @State renameDid: string = '';
+  @State renameValue: string = '';
+  @State showCardSheet: boolean = false;
+  @State cardDeviceDid: string = '';
+  @State cardDeviceName: string = '';
+  @State cardDimension: string = '2*2';
+  @State cardContent: string = 'power';
+  @State cardCustomText: string = '';
+  @State cardTitle: string = '';
+  private pendingDeviceDid: string = '';
+  private infoRefreshTimer: number = -1;
+  private lastInfoRefreshAt: number = 0;
+  @State infoLoading: boolean = false;
+  @State infoError: string = '';
+  @State temperatureRangeText: string = '--';
+  @State humidityRangeText: string = '--';
+  @State pm25RangeText: string = '--';
+  @State temperatureMoreText: string = '';
+  @State humidityMoreText: string = '';
+  @State pm25MoreText: string = '';
+  @State onDeviceCount: number = 0;
+  @State infoDeviceCount: number = 0;
+  @State temperatureDevices: InfoDeviceEntry[] = [];
+  @State humidityDevices: InfoDeviceEntry[] = [];
+  @State pm25Devices: InfoDeviceEntry[] = [];
+  @State onDevices: InfoDeviceEntry[] = [];
+  @State showTemperatureSheet: boolean = false;
+  @State showHumiditySheet: boolean = false;
+  @State showPm25Sheet: boolean = false;
+  @State showOnSheet: boolean = false;
+  @State showExcludeSheet: boolean = false;
+  @State showFamilySheet: boolean = false;
+  @State homeRefreshing: boolean = false;
+  @State smartRefreshing: boolean = false;
+  @State alertRefreshing: boolean = false;
+  @State homeRefreshText: string = '下拉刷新';
+  @State smartRefreshText: string = '下拉刷新';
+  @State alertRefreshText: string = '下拉刷新';
+  @State scenes: XiaomiScene[] = [];
+  @State localScenes: LocalScene[] = [];
+  @State scenesLoading: boolean = false;
+  @State scenesError: string = '';
+  @State sceneCategory: string = 'auto';
+  @State lightsOffing: boolean = false;
+  @State alerts: AlertItem[] = [];
+  @State alertsLoading: boolean = false;
+  @State cloudMessages: MijiaMessageItem[] = [];
+  @State cloudMessageLoading: boolean = false;
+  @State cloudMessageLoaded: boolean = false;
+  @State unreadMessageIds: string[] = [];
+  @State skeletonPlaceholders: number[] = [0, 1, 2, 3, 4, 5];
+  @State overviewSkeletonPlaceholders: number[] = [0, 1, 2, 3];
+  // 通知点击直达：EntryAbility 解析 want 后写入，首页消费后清空
+  @StorageProp('pendingDeviceDetailDid') @Watch('onPendingDeviceDidChanged') pendingDeviceDetailDid: string = '';
+  private homeSwitchInFlight: boolean = false;
+  private loadDataSeq: number = 0;
+  private timerTickerId: number = -1;
+  private quickPollTimerId: number = -1;
+
+  aboutToAppear(): void {
+    FeedbackLogService.setCurrentPage('首页');
+    this.onBreakpointChange();
+    this.localRooms = RoomStore.loadRooms();
+    this.loadDeviceOverrides();
+    // 快捷开关：恢复上次的电源属性与状态，按钮冷启动立即可见
+    this.loadPersistedQuickPower();
+    this.loadData(true);
+    this.loadAccount();
+    if (!this.isWearable) {
+      this.startInfoRefreshTimer();
+      this.refreshInfoOnEnter();
+    }
+    this.checkDueTimers();
+    this.startTimerTicker();
+    this.startQuickPoll();
+    // 冷启动经通知点入：等待首页与导航栈就绪后消费待处理 did
+    const pendingDid = AppStorage.get<string>('pendingDeviceDetailDid');
+    if (pendingDid !== undefined && pendingDid.length > 0) {
+      setTimeout((): void => {
+        this.consumePendingDeviceDetail();
+      }, 600);
+    }
+  }
+
+  aboutToDisappear(): void {
+    this.stopInfoRefreshTimer();
+    this.stopTimerTicker();
+    this.stopQuickPoll();
+  }
+
+  onPageShow(): void {
+    this.localRooms = RoomStore.loadRooms();
+    this.loadDeviceOverrides();
+    this.rebuildRoomChips();
+    this.applyDeviceVisibility();
+    // 从详情页返回时同步本地智能、补检到期定时，并刷新快捷开关状态
+    this.loadLocalScenes();
+    this.checkDueTimers();
+    this.loadQuickSwitchStates();
+  }
+
+  /** 同步本地设备覆盖数据（改名 / 收藏 / 排序模式），详情页修改后返回时刷新 */
+  private loadDeviceOverrides(): void {
+    this.favoriteDevices = DeviceOverrideStore.loadFavorites();
+    this.nameOverrides = DeviceOverrideStore.loadNameOverrides();
+    const storedMode = AppSettingsStore.getString('deviceSortMode', '');
+    if (storedMode === 'smart' || storedMode === 'name' || storedMode === 'room') {
+      this.deviceSortMode = storedMode;
+    } else {
+      this.deviceSortMode = this.sortDevicesByRoom ? 'room' : 'smart';
+    }
+  }
+
+  /** 设置页「按房间排序」开关变化时同步排序模式 */
+  onSortDevicesByRoomChanged(): void {
+    const nextMode = this.sortDevicesByRoom ? 'room'
+      : (this.deviceSortMode === 'room' ? 'smart' : this.deviceSortMode);
+    if (nextMode !== this.deviceSortMode) {
+      this.deviceSortMode = nextMode;
+      AppSettingsStore.setString('deviceSortMode', nextMode);
+    }
+  }
+
+  onHideOfflineDevicesChanged(): void {
+    this.applyDeviceVisibility();
+  }
+
+  private applyDeviceVisibility(): void {
+    let visible = this.allVisibleDevices;
+    if (this.hideOfflineDevices) {
+      visible = visible.filter((device: XiaomiDevice) => device.online);
+    }
+    this.devices = this.sortVisibleDevices(visible);
+    this.updateFilteredDevices();
+  }
+
+  async loadData(forceRefresh: boolean, silent: boolean = false): Promise<void> {
+    const seq = ++this.loadDataSeq;
+    if (!silent && seq === this.loadDataSeq) {
+      this.loading = true;
+    }
+    this.errorMessage = '';
+    this.statusMessage = '';
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      const snapshot = await xiaomiDataService.getHomeSnapshot(context, forceRefresh);
+      if (seq !== this.loadDataSeq) {
+        return;
+      }
+      const homes = JSON.parse(snapshot.homesJson) as XiaomiHome[];
+      const deviceMap = JSON.parse(snapshot.devicesJson) as Record<string, XiaomiDevice>;
+      this.dataState = snapshot.state;
+      this.homes = homes;
+      if (this.selectedHomeId.length === 0 && homes.length > 0) {
+        this.selectedHomeId = homes[0].homeId;
+        this.selectedHomeName = homes[0].name;
+        AppSettingsStore.setString('selectedHomeId', homes[0].homeId);
+        AppSettingsStore.setString('selectedHomeName', homes[0].name);
+      }
+      const allDevices: XiaomiDevice[] = [];
+      const dids = Object.keys(deviceMap);
+      for (let i = 0; i < dids.length; i++) {
+        allDevices.push(deviceMap[dids[i]]);
+      }
+      let visibleDevices: XiaomiDevice[] = [];
+      if (this.selectedHomeId.length === 0) {
+        visibleDevices = [];
+      } else if (this.selectedHomeId === ALL_HOMES_ID) {
+        visibleDevices = allDevices;
+      } else {
+        visibleDevices = allDevices.filter((device: XiaomiDevice) => device.homeId === this.selectedHomeId);
+      }
+      visibleDevices = DeviceRemovalStore.filter(visibleDevices);
+      this.allVisibleDevices = visibleDevices;
+      this.rebuildRoomChips();
+      let displayDevices: XiaomiDevice[] = [];
+      if (this.hideOfflineDevices) {
+        displayDevices = visibleDevices.filter((device: XiaomiDevice) => device.online);
+      } else {
+        displayDevices = visibleDevices;
+      }
+      this.devices = this.sortVisibleDevices(displayDevices);
+      if (this.selectedRoomKey !== ROOM_ALL_KEY && this.findChip(this.selectedRoomKey) === null) {
+        this.selectedRoomKey = ROOM_ALL_KEY;
+      }
+      this.updateFilteredDevices();
+      this.loadQuickSwitchStates();
+      CardFormService.syncFromDevices(this.getUIContext().getHostContext() as Context,
+        this.devices, this.quickPowerStates).catch(() => {});
+      FeedbackLogService.recordOperation('PAGE',
+        `首页设备列表: 共 ${displayDevices.length} 台，${this.deviceListSummary(displayDevices)}`);
+      const excludeOptions: InfoExcludeOption[] = [];
+      for (let i = 0; i < displayDevices.length; i++) {
+        excludeOptions.push({
+          did: displayDevices[i].did,
+          name: displayDevices[i].name,
+          roomName: displayDevices[i].roomName
+        });
+      }
+      AppStorage.setOrCreate('infoDeviceOptions', excludeOptions);
+
+      if (this.selectedHomeId.length === 0) {
+        this.statusMessage = '请先选择家庭';
+      } else if (this.dataState === DataSourceState.STALE) {
+        this.statusMessage = '网络不可用，当前显示过期缓存';
+      } else if (this.dataState === DataSourceState.CACHED) {
+        this.statusMessage = '网络不可用，当前显示最近缓存';
+      } else if (this.devices.length === 0) {
+        this.statusMessage = this.selectedHomeId === ALL_HOMES_ID ? '没有设备' : '当前家庭没有设备';
+      }
+    } catch (err) {
+      if (seq !== this.loadDataSeq) {
+        return;
+      }
+      this.errorMessage = err instanceof Error ? err.message : '加载家庭数据失败';
+      Logger.error('load home data failed, %{public}s', this.errorMessage);
+      if (err instanceof XiaomiAuthError) {
+        await xiaomiDataService.clearSession();
+        this.getUIContext().getRouter().replaceUrl({ url: 'pages/LoginPage' });
+      }
+    } finally {
+      if (!silent && seq === this.loadDataSeq) {
+        this.loading = false;
+      }
+    }
+  }
+
+  async loadAccount(): Promise<void> {
+    try {
+      const auth = await xiaomiDataService.getMijiaAuth();
+      if (auth !== null) {
+        this.accountUserId = auth.userId;
+      }
+      const profile = await xiaomiDataService.getUserProfile();
+      if (profile !== null) {
+        this.accountNickname = profile.nickname;
+        this.accountAvatarUrl = profile.avatarUrl;
+      } else {
+        this.accountNickname = '';
+        this.accountAvatarUrl = '';
+      }
+    } catch (err) {
+      this.accountUserId = '';
+      this.accountNickname = '';
+      this.accountAvatarUrl = '';
+    }
+  }
+
+  async loadScenes(force: boolean = false): Promise<void> {
+    if (this.scenesLoading) {
+      return;
+    }
+    this.scenesLoading = true;
+    this.scenesError = '';
+    this.loadLocalScenes();
+    try {
+      const list: XiaomiScene[] = [];
+      // 只加载用户当前选择家庭的自动化（含共享家庭场景）
+      const targetHomes: XiaomiHome[] = [];
+      if (this.selectedHomeId === ALL_HOMES_ID) {
+        for (let i = 0; i < this.homes.length; i++) {
+          targetHomes.push(this.homes[i]);
+        }
+      } else {
+        const home = this.currentHome();
+        if (home !== null) {
+          targetHomes.push(home);
+        }
+      }
+      if (targetHomes.length === 0 && this.selectedHomeId.length > 0 &&
+        this.selectedHomeId !== ALL_HOMES_ID) {
+        const snapshot = await xiaomiDataService.getHomeSnapshot(getContext(this) as common.UIAbilityContext,
+          false);
+        const homeList = JSON.parse(snapshot.homesJson) as XiaomiHome[];
+        for (let i = 0; i < homeList.length; i++) {
+          if (homeList[i].homeId === this.selectedHomeId) {
+            targetHomes.push(homeList[i]);
+            break;
+          }
+        }
+      }
+      const seenSceneIds: string[] = [];
+      for (let i = 0; i < targetHomes.length; i++) {
+        const scenes = await xiaomiDataService.getScenes(targetHomes[i].homeId);
+        for (let j = 0; j < scenes.length; j++) {
+          if (seenSceneIds.indexOf(scenes[j].sceneId) < 0) {
+            seenSceneIds.push(scenes[j].sceneId);
+            list.push(scenes[j]);
+          }
+        }
+      }
+      this.scenes = list;
+      FeedbackLogService.recordOperation('PAGE', `智能页自动化: ${list.length} 条`);
+    } catch (err) {
+      this.scenesError = err instanceof Error ? err.message : '加载自动化失败';
+      Logger.error('load scenes failed, %{public}s', this.scenesError);
+      if (err instanceof XiaomiAuthError) {
+        await xiaomiDataService.clearSession();
+        this.getUIContext().getRouter().replaceUrl({ url: 'pages/LoginPage' });
+      }
+    } finally {
+      this.scenesLoading = false;
+    }
+  }
+
+  private runSceneById(scene: XiaomiScene): void {
+    this.getUIContext().showAlertDialog({
+      title: scene.type === 'auto' ? '执行自动化' : '执行手动场景',
+      message: `确定执行「${scene.name}」吗？`,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '执行',
+        fontColor: HwColor.primary,
+        action: () => {
+          this.execScene(scene);
+        }
+      }
+    });
+  }
+
+  private async execScene(scene: XiaomiScene): Promise<void> {
+    try {
+      await xiaomiDataService.runScene(scene.sceneId, scene.homeId);
+      this.getUIContext().getPromptAction().showToast({ message: `已执行「${scene.name}」` });
+    } catch (err) {
+      Logger.error('run scene failed, %{public}s',
+        err instanceof Error ? err.message : String(err));
+      this.getUIContext().getPromptAction().showToast({
+        message: err instanceof Error ? err.message : '执行自动化失败'
+      });
+    }
+  }
+
+  loadLocalScenes(): void {
+    this.localScenes = LocalSceneStore.load();
+  }
+
+  openSceneCreatePage(): void {
+    this.getUIContext().getRouter().pushUrl({ url: 'pages/SceneCreatePage' });
+  }
+
+  private async execLocalScene(scene: LocalScene): Promise<void> {
+    if (scene.actions.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '该智能没有可执行的动作' });
+      return;
+    }
+    try {
+      const firstDid = scene.actions[0].did;
+      let firstDevice: XiaomiDevice | undefined = undefined;
+      for (let i = 0; i < this.allVisibleDevices.length; i++) {
+        if (this.allVisibleDevices[i].did === firstDid) {
+          firstDevice = this.allVisibleDevices[i];
+          break;
+        }
+      }
+      const controller = await xiaomiDataService.getDeviceController(firstDevice);
+      let failed = 0;
+      for (let i = 0; i < scene.actions.length; i++) {
+        const action = scene.actions[i];
+        try {
+          await controller.setProperty(action.did, action.siid, action.piid, action.value);
+        } catch (err) {
+          failed++;
+          Logger.error('local scene action failed, %{public}s',
+            err instanceof Error ? err.message : String(err));
+        }
+      }
+      this.getUIContext().getPromptAction().showToast({
+        message: failed === 0 ? `已执行「${scene.name}」` : `执行「${scene.name}」失败 ${failed} 项`
+      });
+    } catch (err) {
+      this.getUIContext().getPromptAction().showToast({
+        message: err instanceof Error ? err.message : '执行智能失败'
+      });
+    }
+  }
+
+  private confirmDeleteLocalScene(scene: LocalScene): void {
+    this.getUIContext().showAlertDialog({
+      title: '删除智能',
+      message: `确定删除「${scene.name}」吗？`,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '删除',
+        fontColor: HwColor.danger,
+        action: () => {
+          LocalSceneStore.delete(scene.sceneId);
+          this.loadLocalScenes();
+        }
+      }
+    });
+  }
+
+  private startTimerTicker(): void {
+    this.stopTimerTicker();
+    this.timerTickerId = setInterval(() => {
+      this.checkDueTimers();
+    }, 30000);
+  }
+
+  private stopTimerTicker(): void {
+    if (this.timerTickerId >= 0) {
+      clearInterval(this.timerTickerId);
+      this.timerTickerId = -1;
+    }
+  }
+
+  /** 快捷开关轮询：外部 App/物理按键改状态后首页卡片颜色实时同步 */
+  private startQuickPoll(): void {
+    this.stopQuickPoll();
+    const seconds: number = Number(AppSettingsStore.getString('quickPollSeconds', '20'));
+    const interval: number = (Number.isNaN(seconds) ? 20 : seconds) * 1000;
+    if (interval <= 0) {
+      return;
+    }
+    this.quickPollTimerId = setInterval(() => {
+      if (this.activeTab === 0) {
+        this.loadQuickSwitchStates();
+      }
+    }, interval);
+  }
+
+  private stopQuickPoll(): void {
+    if (this.quickPollTimerId >= 0) {
+      clearInterval(this.quickPollTimerId);
+      this.quickPollTimerId = -1;
+    }
+  }
+
+  private todayKey(now: Date): string {
+    const month = now.getMonth() + 1;
+    const day = now.getDate();
+    return `${now.getFullYear()}-${month < 10 ? '0' + month : month}-${day < 10 ? '0' + day : day}`;
+  }
+
+  /** 心跳检查本地智能定时：整分钟匹配 + 重复日掩码 + lastFireDay 防同日重复触发 */
+  private checkDueTimers(): void {
+    const now = new Date();
+    const today = this.todayKey(now);
+    const weekday = (now.getDay() + 6) % 7;
+    const scenes = this.localScenes;
+    for (let i = 0; i < scenes.length; i++) {
+      const scene = scenes[i];
+      if (!scene.timerEnabled || scene.lastFireDay === today) {
+        continue;
+      }
+      if (scene.timerDays.length === 7 && scene.timerDays.charAt(weekday) !== '1') {
+        continue;
+      }
+      if (scene.timerHour !== now.getHours() || scene.timerMinute !== now.getMinutes()) {
+        continue;
+      }
+      const fired: LocalScene = {
+        sceneId: scene.sceneId,
+        name: scene.name,
+        actions: scene.actions,
+        timerEnabled: scene.timerEnabled,
+        timerHour: scene.timerHour,
+        timerMinute: scene.timerMinute,
+        timerDays: scene.timerDays,
+        lastFireDay: today
+      };
+      LocalSceneStore.update(fired);
+      this.localScenes = LocalSceneStore.load();
+      this.execLocalScene(fired);
+    }
+  }
+
+  private sceneTimerText(scene: LocalScene): string {
+    if (!scene.timerEnabled) {
+      return `本地智能 · ${scene.actions.length} 个动作`;
+    }
+    const minute = scene.timerMinute;
+    const timeText = `${scene.timerHour < 10 ? '0' + scene.timerHour : scene.timerHour}:${minute < 10 ? '0' + minute : minute}`;
+    let daysText = '每天';
+    if (scene.timerDays !== '1111111') {
+      const names: string[] = ['一', '二', '三', '四', '五', '六', '日'];
+      daysText = '周';
+      for (let i = 0; i < 7; i++) {
+        if (scene.timerDays.charAt(i) === '1') {
+          daysText += names[i];
+        }
+      }
+    }
+    return `本地智能 · 定时 ${timeText} ${daysText} · ${scene.actions.length} 个动作`;
+  }
+
+  private sceneTypeLabel(scene: XiaomiScene): string {
+    const typeText = scene.type === 'auto' ? '自动化' : '手动执行';
+    return `${typeText} · ${scene.isEnabled ? '已启用' : '已停用'}`;
+  }
+
+  private scenesForCategory(category: string): XiaomiScene[] {
+    const result: XiaomiScene[] = [];
+    for (let i = 0; i < this.scenes.length; i++) {
+      if (this.scenes[i].type === category) {
+        result.push(this.scenes[i]);
+      }
+    }
+    return result;
+  }
+
+  private categoryCount(key: string): number {
+    return key === 'local' ? this.localScenes.length : this.scenesForCategory(key).length;
+  }
+
+  /** 灯光类设备判断（与 deviceSymbol 灯泡分支一致的关键字） */
+  private isLightDevice(device: XiaomiDevice): boolean {
+    const text = `${device.model} ${device.name}`.toLowerCase();
+    return text.includes('lamp') || text.includes('light') || text.includes('yeelight') ||
+      text.includes('bulb') || text.includes('灯');
+  }
+
+  /** 在 spec 中查找可写布尔型电源属性 */
+  private hasQuickSwitch(device: XiaomiDevice): boolean {
+    const power = this.quickPowerProps.get(device.did);
+    return power !== undefined && power.used;
+  }
+
+  /** 恢复持久化的快捷开关属性与状态（冷启动按钮立即可见，颜色为上次已知状态） */
+  private loadPersistedQuickPower(): void {
+    try {
+      const propsRaw = AppSettingsStore.getString('quick_power_props_v1', '');
+      if (propsRaw.length > 0) {
+        const props = JSON.parse(propsRaw) as Record<string, AlertPropertyInfo>;
+        const dids = Object.keys(props);
+        for (let i = 0; i < dids.length; i++) {
+          this.quickPowerProps.set(dids[i], props[dids[i]]);
+        }
+      }
+      const statesRaw = AppSettingsStore.getString('quick_power_states_v1', '');
+      if (statesRaw.length > 0) {
+        this.quickPowerStates = JSON.parse(statesRaw) as Record<string, boolean>;
+      }
+      this.quickPowerVersion++;
+    } catch (err) {
+      // 持久化数据损坏时忽略，等待重新加载
+    }
+  }
+
+  private persistQuickPowerProps(): void {
+    const payload: Record<string, AlertPropertyInfo> = {};
+    this.quickPowerProps.forEach((value: AlertPropertyInfo, did: string) => {
+      payload[did] = value;
+    });
+    AppSettingsStore.setString('quick_power_props_v1', JSON.stringify(payload));
+  }
+
+  private persistQuickPowerStates(): void {
+    AppSettingsStore.setString('quick_power_states_v1', JSON.stringify(this.quickPowerStates));
+  }
+
+  /** 首页快捷开关：并行加载每台在线设备的电源属性与当前开关状态 */
+  async loadQuickSwitchStates(): Promise<void> {
+    const tasks: Promise<void>[] = [];
+    for (let i = 0; i < this.allVisibleDevices.length; i++) {
+      const device = this.allVisibleDevices[i];
+      if (!device.online) {
+        continue;
+      }
+      tasks.push(this.loadQuickSwitchForDevice(device));
+    }
+    try {
+      await Promise.all(tasks);
+    } catch (err) {
+      // 单设备失败不影响其他设备
+    }
+    this.persistQuickPowerProps();
+  }
+
+  private async loadQuickSwitchForDevice(device: XiaomiDevice): Promise<void> {
+    let power = this.quickPowerProps.get(device.did);
+    if (power === undefined) {
+      if (this.isRouterDevice(device)) {
+        return;
+      }
+      try {
+        const context = getContext(this) as common.UIAbilityContext;
+        const spec = await xiaomiDataService.getDeviceSpecForDeviceCached(device, context);
+        const found = this.findPowerProperty(spec);
+        // 无电源属性（传感器/网关/IR 虚拟设备等）标记为不可开关，不再重试
+        power = found === null ? { siid: -1, piid: -1, used: false, format: '' } : found;
+        this.quickPowerProps.set(device.did, power);
+        if (!power.used) {
+          return;
+        }
+        this.quickPowerVersion++;
+      } catch (err) {
+        // spec 加载失败，下次进入首页重试
+        return;
+      }
+    }
+    if (!power.used) {
+      return;
+    }
+    await this.refreshQuickSwitchState(device, power);
+  }
+
+  async refreshQuickSwitchState(device: XiaomiDevice, power: AlertPropertyInfo): Promise<void> {
+    try {
+      const controller = await xiaomiDataService.getDeviceController(device);
+      const results = await controller.getProperties(device.did, [
+        { did: device.did, siid: power.siid, piid: power.piid }
+      ]);
+      if (results.length > 0) {
+        const next: Record<string, boolean> = this.copyQuickPowerStates();
+        next[device.did] = asBool(results[0].value);
+        this.quickPowerStates = next;
+        this.persistQuickPowerStates();
+      }
+    } catch (err) {
+      // 读取失败保持未知态（灰灯）
+    }
+  }
+
+  async toggleQuickSwitch(device: XiaomiDevice): Promise<void> {
+    const power = this.quickPowerProps.get(device.did);
+    if (power === undefined || !power.used) {
+      return;
+    }
+    const current = asBool(this.quickPowerStates[device.did]);
+    const next: Record<string, boolean> = this.copyQuickPowerStates();
+    next[device.did] = !current;
+    this.quickPowerStates = next;
+    Haptic.soft();
+    FeedbackLogService.recordOperation('UI', `快捷开关 ${this.homeDisplayName(device)} → ${!current ? '开' : '关'}`);
+    // 按 spec format 下发：bool 属性传 true/false，int 属性传 1/0
+    const writeValue: Object = boolWriteValue(power.format, !current);
+    try {
+      const controller = await xiaomiDataService.getDeviceController(device);
+      await controller.setProperty(device.did, power.siid, power.piid, writeValue);
+      // 回读真值覆盖乐观值，确保卡片颜色与设备实际状态一致
+      const real: Object | undefined = await controller.getProperty(device.did, power.siid, power.piid);
+      const confirm: Record<string, boolean> = this.copyQuickPowerStates();
+      confirm[device.did] = asBool(real);
+      this.quickPowerStates = confirm;
+    } catch (err) {
+      const rollback: Record<string, boolean> = this.copyQuickPowerStates();
+      rollback[device.did] = current;
+      this.quickPowerStates = rollback;
+      const message: string = err instanceof Error ? err.message : '控制设备失败';
+      this.getUIContext().getPromptAction().showToast({ message: message });
+      Logger.error('quick switch failed, %{public}s', message);
+    }
+    CardFormService.syncFromDevices(this.getUIContext().getHostContext() as Context,
+      this.devices, this.quickPowerStates).catch(() => {});
+  }
+
+  private copyQuickPowerStates(): Record<string, boolean> {
+    const copy: Record<string, boolean> = {};
+    const dids = Object.keys(this.quickPowerStates);
+    for (let i = 0; i < dids.length; i++) {
+      copy[dids[i]] = this.quickPowerStates[dids[i]];
+    }
+    return copy;
+  }
+
+  private findPowerProperty(spec: MIoTSpecInstance): AlertPropertyInfo | null {    for (let i = 0; i < spec.services.length; i++) {
+      const service = spec.services[i];
+      for (let j = 0; j < service.properties.length; j++) {
+        const prop = service.properties[j];
+        if (!prop.writable || prop.format.toLowerCase() !== 'bool') {
+          continue;
+        }
+        const text = `${prop.name} ${prop.description} ${prop.type}`.toLowerCase();
+        // 精确匹配电源/开关，避免"开盖检测""延时开启"等 bool 属性被误当主开关
+        if (text.includes('power') || text.includes('switch') || text.includes('开关')
+          || text === 'on' || text === '开') {
+          return { siid: service.iid, piid: prop.iid, used: true, format: prop.format };
+        }
+      }
+    }
+    return null;
+  }
+
+  private confirmLightsOff(): void {
+    this.getUIContext().showAlertDialog({
+      title: '一键关灯',
+      message: '将关闭当前家庭所有在线灯光设备，确定继续吗？',
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '关灯',
+        fontColor: HwColor.primary,
+        action: () => {
+          this.turnOffAllLights();
+        }
+      }
+    });
+  }
+
+  private async turnOffAllLights(): Promise<void> {
+    if (this.lightsOffing) {
+      return;
+    }
+    const lights: XiaomiDevice[] = [];
+    for (let i = 0; i < this.allVisibleDevices.length; i++) {
+      const device = this.allVisibleDevices[i];
+      if (device.online && this.isLightDevice(device)) {
+        lights.push(device);
+      }
+    }
+    if (lights.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '没有找到在线的灯光设备' });
+      return;
+    }
+    this.lightsOffing = true;
+    let failed = 0;
+    try {
+      const controller = await xiaomiDataService.getDeviceController(lights[0]);
+      for (let i = 0; i < lights.length; i++) {
+        const light = lights[i];
+        try {
+          const spec = await xiaomiDataService.getDeviceSpecForDevice(light);
+          const power = this.findPowerProperty(spec);
+          if (power === null) {
+            failed++;
+            continue;
+          }
+          await controller.setProperty(light.did, power.siid, power.piid, false);
+        } catch (err) {
+          failed++;
+          Logger.error('light off failed, %{public}s', err instanceof Error ? err.message : String(err));
+        }
+      }
+      const offCount = lights.length - failed;
+      this.getUIContext().getPromptAction().showToast({
+        message: failed === 0 ? `已关闭 ${lights.length} 盏灯` : `已关闭 ${offCount} 盏灯，${failed} 盏失败`
+      });
+    } finally {
+      this.lightsOffing = false;
+    }
+  }
+
+  private findBatteryProperty(spec: MIoTSpecInstance): AlertPropertyInfo | null {
+    for (let i = 0; i < spec.services.length; i++) {
+      const service = spec.services[i];
+      for (let j = 0; j < service.properties.length; j++) {
+        const prop = service.properties[j];
+        if (!prop.readable) {
+          continue;
+        }
+        const format = prop.format.toLowerCase();
+        if (format !== 'float' && format !== 'int') {
+          continue;
+        }
+        const unitKey = prop.unit.trim().toLowerCase();
+        if (unitKey !== 'percentage' && unitKey !== 'percent') {
+          continue;
+        }
+        const text = `${prop.name} ${prop.description} ${prop.type} ${prop.unit}`.toLowerCase();
+        if (!text.includes('battery') && !text.includes('电量') && !text.includes('剩余电量')) {
+          continue;
+        }
+        if (text.includes('state') || text.includes('status') || text.includes('charging') ||
+          text.includes('low') || text.includes('health')) {
+          continue;
+        }
+        return { siid: service.iid, piid: prop.iid, used: false, format: prop.format };
+      }
+    }
+    return null;
+  }
+
+  private findFilterProperty(spec: MIoTSpecInstance): AlertPropertyInfo | null {
+    for (let i = 0; i < spec.services.length; i++) {
+      const service = spec.services[i];
+      for (let j = 0; j < service.properties.length; j++) {
+        const prop = service.properties[j];
+        if (!prop.readable) {
+          continue;
+        }
+        const format = prop.format.toLowerCase();
+        if (format !== 'float' && format !== 'int') {
+          continue;
+        }
+        const text = `${prop.name} ${prop.description} ${prop.type} ${prop.unit}`.toLowerCase();
+        const isFilter = text.includes('filter') || text.includes('consumable') ||
+          text.includes('replacement') || text.includes('maintenance') ||
+          text.includes('尘盒') || text.includes('滤芯') || text.includes('耗材');
+        if (!isFilter) {
+          continue;
+        }
+        const unitKey = prop.unit.trim().toLowerCase();
+        const isLifeMetric = text.includes('percent') || text.includes('remaining') ||
+          text.includes('life') || text.includes('left') || text.includes('remain') ||
+          unitKey === 'percentage' || unitKey === 'percent';
+        if (!isLifeMetric) {
+          continue;
+        }
+        const used = text.includes('used') || text.includes('consumption') ||
+          text.includes('耗材') || text.includes('累计');
+        return { siid: service.iid, piid: prop.iid, used: used, format: prop.format };
+      }
+    }
+    return null;
+  }
+
+  private async buildAlerts(): Promise<void> {
+    if (this.alertsLoading) {
+      return;
+    }
+    this.alertsLoading = true;
+    try {
+      // use all devices of current home (incl. offline) for alerts, ignore hide-offline setting
+      let familyDevices = this.allVisibleDevices;
+      if (familyDevices.length === 0) {
+        await this.loadData(false);
+        familyDevices = this.allVisibleDevices;
+      }
+      const items: AlertItem[] = [];
+      const batteryTargets: InfoPropertyTarget[] = [];
+      const filterTargets: InfoPropertyTarget[] = [];
+      for (let i = 0; i < familyDevices.length; i++) {
+        const device = familyDevices[i];
+        if (!device.online) {
+          items.push({
+            did: device.did,
+            deviceName: device.name,
+            roomName: device.roomName,
+            type: 'offline',
+            title: '设备离线',
+            detail: `${device.name} 当前离线，请检查电源与网络`,
+            level: 'info'
+          });
+          continue;
+        }
+        let spec: MIoTSpecInstance;
+        try {
+          spec = await xiaomiDataService.getDeviceSpecForDevice(device);
+        } catch (err) {
+          Logger.warn('load alert spec failed for %{public}s, %{public}s',
+            device.did, err instanceof Error ? err.message : String(err));
+          continue;
+        }
+        const batteryProp = this.findBatteryProperty(spec);
+        if (batteryProp !== null) {
+          batteryTargets.push({
+            did: device.did,
+            name: device.name,
+            roomName: device.roomName,
+            siid: batteryProp.siid,
+            piid: batteryProp.piid,
+            unit: 'percentage'
+          });
+        }
+        const filterProp = this.findFilterProperty(spec);
+        if (filterProp !== null) {
+          filterTargets.push({
+            did: device.did,
+            name: device.name,
+            roomName: device.roomName,
+            siid: filterProp.siid,
+            piid: filterProp.piid,
+            unit: filterProp.used ? 'used' : 'remaining'
+          });
+        }
+      }
+      const alertFirstDid = batteryTargets.length > 0 ? batteryTargets[0].did
+        : (filterTargets.length > 0 ? filterTargets[0].did : '');
+      let alertFirstDevice: XiaomiDevice | undefined = undefined;
+      if (alertFirstDid.length > 0) {
+        for (let i = 0; i < this.allVisibleDevices.length; i++) {
+          if (this.allVisibleDevices[i].did === alertFirstDid) {
+            alertFirstDevice = this.allVisibleDevices[i];
+            break;
+          }
+        }
+      }
+      const controller = await xiaomiDataService.getDeviceController(alertFirstDevice);
+      if (batteryTargets.length > 0) {
+        const values = await this.fetchAlertValues(controller, batteryTargets);
+        for (let i = 0; i < batteryTargets.length; i++) {
+          const target = batteryTargets[i];
+          const value = Number(values.get(`${target.did}.${target.siid}.${target.piid}`));
+          if (Number.isNaN(value) || value >= 20) {
+            continue;
+          }
+          items.push({
+            did: target.did,
+            deviceName: target.name,
+            roomName: target.roomName,
+            type: 'battery',
+            title: '电量不足',
+            detail: `${target.name} 电量仅剩 ${Math.round(value)}%，请及时充电`,
+            level: 'warn'
+          });
+        }
+      }
+      if (filterTargets.length > 0) {
+        const values = await this.fetchAlertValues(controller, filterTargets);
+        for (let i = 0; i < filterTargets.length; i++) {
+          const target = filterTargets[i];
+          const value = Number(values.get(`${target.did}.${target.siid}.${target.piid}`));
+          if (Number.isNaN(value)) {
+            continue;
+          }
+          const exhausted = target.unit === 'used' ? value >= 90 : value <= 10;
+          if (!exhausted) {
+            continue;
+          }
+          items.push({
+            did: target.did,
+            deviceName: target.name,
+            roomName: target.roomName,
+            type: 'consumable',
+            title: '耗材不足',
+            detail: `${target.name} 滤芯/耗材需关注，建议及时更换`,
+            level: 'warn'
+          });
+        }
+      }
+      this.alerts = items;
+      FeedbackLogService.recordOperation('PAGE', `信息页: ${items.length} 条提醒`);
+    } catch (err) {
+      Logger.error('build alerts failed, %{public}s',
+        err instanceof Error ? err.message : String(err));
+      if (err instanceof XiaomiAuthError) {
+        await xiaomiDataService.clearSession();
+        this.getUIContext().getRouter().replaceUrl({ url: 'pages/LoginPage' });
+      }
+    } finally {
+      this.alertsLoading = false;
+    }
+  }
+
+  private async refreshCloudMessages(): Promise<void> {
+    if (this.cloudMessageLoading || this.selectedHomeId.length === 0) {
+      return;
+    }
+    this.cloudMessageLoading = true;
+    try {
+      const items = await xiaomiDataService.getCloudMessageList(this.selectedHomeId);
+      this.cloudMessages = items;
+      this.cloudMessageLoaded = true;
+      this.refreshUnreadMessages();
+    } catch (err) {
+      Logger.warn('load cloud messages failed, %{public}s',
+        err instanceof Error ? err.message : String(err));
+      if (err instanceof XiaomiAuthError) {
+        await xiaomiDataService.clearSession();
+        this.getUIContext().getRouter().replaceUrl({ url: 'pages/LoginPage' });
+      }
+    } finally {
+      this.cloudMessageLoading = false;
+    }
+  }
+
+  /** 根据本地已读集合刷新未读消息列表 */
+  private refreshUnreadMessages(): void {
+    const readIds = MessageReadStore.loadReadIds();
+    const unread: string[] = [];
+    for (let i = 0; i < this.cloudMessages.length; i++) {
+      if (readIds.indexOf(this.cloudMessages[i].messageId) < 0) {
+        unread.push(this.cloudMessages[i].messageId);
+      }
+    }
+    this.unreadMessageIds = unread;
+  }
+
+  private isMessageUnread(messageId: string): boolean {
+    return this.unreadMessageIds.indexOf(messageId) >= 0;
+  }
+
+  /** 点击消息：标记已读，若消息关联设备则直达详情 */
+  private markMessageRead(messageId: string): void {
+    MessageReadStore.markRead(messageId);
+    if (this.unreadMessageIds.indexOf(messageId) >= 0) {
+      this.unreadMessageIds = this.unreadMessageIds.filter((id: string): boolean => id !== messageId);
+    }
+  }
+
+  private markAllMessagesRead(): void {
+    const ids: string[] = [];
+    for (let i = 0; i < this.cloudMessages.length; i++) {
+      ids.push(this.cloudMessages[i].messageId);
+    }
+    MessageReadStore.markAllRead(ids);
+    this.unreadMessageIds = [];
+  }
+
+  /** 消费通知深链的待处理设备 did：跳转详情并清空标记 */
+  private consumePendingDeviceDetail(): void {
+    const did = this.pendingDeviceDetailDid;
+    if (did === undefined || did.length === 0) {
+      return;
+    }
+    AppStorage.setOrCreate('pendingDeviceDetailDid', '');
+    const target = this.allVisibleDevices.find((device: XiaomiDevice): boolean => device.did === did);
+    if (target !== undefined && this.isRouterDevice(target)) {
+      return;
+    }
+    this.pageInfos.pushPathByName('deviceDetail', new DeviceDetailRouteParam(did));
+  }
+
+  /** 热启动经通知点入时由 @Watch 触发 */
+  onPendingDeviceDidChanged(): void {
+    this.consumePendingDeviceDetail();
+  }
+
+  private formatCloudMessageTime(timeSec: number): string {
+    if (timeSec <= 0) {
+      return '';
+    }
+    const date = new Date(timeSec * 1000);
+    const now = new Date();
+    const hh = `${date.getHours()}`.padStart(2, '0');
+    const mm = `${date.getMinutes()}`.padStart(2, '0');
+    if (date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth()
+      && date.getDate() === now.getDate()) {
+      return `${hh}:${mm}`;
+    }
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    if (date.getFullYear() === now.getFullYear()) {
+      return `${month}月${day}日 ${hh}:${mm}`;
+    }
+    return `${date.getFullYear()}年${month}月${day}日`;
+  }
+
+  private async fetchAlertValues(
+    controller: DeviceController,
+    targets: InfoPropertyTarget[]
+  ): Promise<Map<string, Object | undefined>> {
+    const dids: string[] = [];
+    const paramsByDid = new Map<string, DevicePropertyParam[]>();
+    for (let i = 0; i < targets.length; i++) {
+      const target = targets[i];
+      let params = paramsByDid.get(target.did);
+      if (!params) {
+        params = [];
+        paramsByDid.set(target.did, params);
+        dids.push(target.did);
+      }
+      params.push({
+        did: target.did,
+        siid: target.siid,
+        piid: target.piid
+      });
+    }
+    const valueMap = new Map<string, Object | undefined>();
+    for (let i = 0; i < dids.length; i++) {
+      const did = dids[i];
+      const params = paramsByDid.get(did);
+      if (!params || params.length === 0) {
+        continue;
+      }
+      try {
+        const results: DevicePropertyResult[] = await controller.getProperties(did, params);
+        for (let j = 0; j < results.length; j++) {
+          const key = `${String(results[j].did)}.${results[j].siid}.${results[j].piid}`;
+          valueMap.set(key, results[j].value);
+        }
+      } catch (err) {
+        Logger.warn('fetch alert properties failed, %{public}s',
+          err instanceof Error ? err.message : String(err));
+      }
+    }
+    return valueMap;
+  }
+
+  async onHomeSelectionChanged(): Promise<void> {
+    if (this.selectedHomeId.length === 0) {
+      return;
+    }
+    if (this.homeSwitchInFlight) {
+      return;
+    }
+    this.homeSwitchInFlight = true;
+    try {
+      // 先等设备列表加载完成，再刷新智能与信息提醒，避免用到旧家庭数据
+      await this.loadData(true);
+      await this.loadScenes(false);
+      await this.buildAlerts();
+    } finally {
+      this.homeSwitchInFlight = false;
+    }
+  }
+
+  showLogoutDialog(): void {
+    this.getUIContext().showAlertDialog({
+      title: '退出登录',
+      message: '确定要退出当前账号吗？',
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '退出',
+        fontColor: HwColor.danger,
+        action: () => {
+          this.confirmLogout();
+        }
+      }
+    });
+  }
+
+  async confirmLogout(): Promise<void> {
+    FeedbackLogService.recordOperation('UI', '退出登录');
+    await xiaomiDataService.clearSession();
+    this.getUIContext().getRouter().replaceUrl({ url: 'pages/LoginPage' });
+  }
+
+  async loadInfoData(silent: boolean = false): Promise<void> {
+    if (this.infoFetching) {
+      return;
+    }
+    this.infoFetching = true;
+    if (!silent) {
+      this.infoLoading = true;
+      this.infoError = '';
+      this.temperatureRangeText = '--';
+      this.humidityRangeText = '--';
+      this.pm25RangeText = '--';
+      this.temperatureMoreText = '';
+      this.humidityMoreText = '';
+      this.pm25MoreText = '';
+      this.onDeviceCount = 0;
+      this.temperatureDevices = [];
+      this.humidityDevices = [];
+      this.pm25Devices = [];
+      this.onDevices = [];
+      this.infoDeviceCount = 0;
+    }
+    try {
+      // use all devices of current home (incl. offline) for alerts, ignore hide-offline setting
+      let familyDevices = this.allVisibleDevices;
+      if (familyDevices.length === 0) {
+        await this.loadData(false);
+        familyDevices = this.allVisibleDevices;
+      }
+      const temperatureTargets: InfoPropertyTarget[] = [];
+      const humidityTargets: InfoPropertyTarget[] = [];
+      const pm25Targets: InfoPropertyTarget[] = [];
+      const switchTargets: InfoPropertyTarget[] = [];
+      for (let i = 0; i < familyDevices.length; i++) {
+        const device = familyDevices[i];
+        if (!device.online) {
+          continue;
+        }
+        if (this.isDeviceExcluded(device.did)) {
+          continue;
+        }
+        // 温湿度指标仅来自温度计/温湿度计/空气净化器等环境设备，
+        // 避免饮水机、灭蚊灯、插座等带温度属性的设备污染数据
+        const environmentOnly = this.isEnvironmentSensorDevice(device);
+        let spec: MIoTSpecInstance;
+        try {
+          spec = await xiaomiDataService.getDeviceSpecForDevice(device);
+        } catch (err) {
+          Logger.warn('load info spec failed for %{public}s, %{public}s',
+            device.did, err instanceof Error ? err.message : String(err));
+          continue;
+        }
+        const temperatureProp = environmentOnly ? this.findInfoProperty(spec, ['temperature'],
+          ['target', 'set', 'color-temperature', 'colour-temperature', 'color temperature',
+            'colour temperature', 'color.temperature', 'colour.temperature'],
+          ['kelvin', 'k']) : null;
+        if (temperatureProp !== null) {
+          const temperatureTarget: InfoPropertyTarget = {
+            did: device.did,
+            name: device.name,
+            roomName: device.roomName,
+            siid: temperatureProp.siid,
+            piid: temperatureProp.piid,
+            unit: temperatureProp.unit
+          };
+          temperatureTargets.push(temperatureTarget);
+        }
+        const humidityProp = environmentOnly ? this.findInfoProperty(spec, ['humidity'], ['target', 'set'], []) : null;
+        if (humidityProp !== null) {
+          const humidityTarget: InfoPropertyTarget = {
+            did: device.did,
+            name: device.name,
+            roomName: device.roomName,
+            siid: humidityProp.siid,
+            piid: humidityProp.piid,
+            unit: humidityProp.unit
+          };
+          humidityTargets.push(humidityTarget);
+        }
+        const pm25Prop = this.findInfoProperty(spec, ['pm2.5'], [], []);
+        if (pm25Prop !== null) {
+          const pm25Target: InfoPropertyTarget = {
+            did: device.did,
+            name: device.name,
+            roomName: device.roomName,
+            siid: pm25Prop.siid,
+            piid: pm25Prop.piid,
+            unit: pm25Prop.unit
+          };
+          pm25Targets.push(pm25Target);
+        }
+        const switchProp = this.findSwitchProperty(spec);
+        if (switchProp !== null) {
+          const switchTarget: InfoPropertyTarget = {
+            did: device.did,
+            name: device.name,
+            roomName: device.roomName,
+            siid: switchProp.siid,
+            piid: switchProp.piid,
+            unit: ''
+          };
+          switchTargets.push(switchTarget);
+        }
+      }
+      this.infoDeviceCount = temperatureTargets.length + humidityTargets.length +
+        pm25Targets.length + switchTargets.length;
+      const infoAllTargets: InfoPropertyTarget[] = [];
+      for (let i = 0; i < temperatureTargets.length; i++) {
+        infoAllTargets.push(temperatureTargets[i]);
+      }
+      for (let i = 0; i < humidityTargets.length; i++) {
+        infoAllTargets.push(humidityTargets[i]);
+      }
+      for (let i = 0; i < pm25Targets.length; i++) {
+        infoAllTargets.push(pm25Targets[i]);
+      }
+      for (let i = 0; i < switchTargets.length; i++) {
+        infoAllTargets.push(switchTargets[i]);
+      }
+      let infoFirstDevice: XiaomiDevice | undefined = undefined;
+      if (infoAllTargets.length > 0) {
+        for (let i = 0; i < this.allVisibleDevices.length; i++) {
+          if (this.allVisibleDevices[i].did === infoAllTargets[0].did) {
+            infoFirstDevice = this.allVisibleDevices[i];
+            break;
+          }
+        }
+      }
+      const controller = await xiaomiDataService.getDeviceController(infoFirstDevice);
+      const temperatureResult = await this.fetchInfoMetric(controller, temperatureTargets);
+      const humidityResult = await this.fetchInfoMetric(controller, humidityTargets);
+      const pm25Result = await this.fetchInfoMetric(controller, pm25Targets);
+      this.temperatureRangeText = this.formatInfoAverage(temperatureResult.range,
+        this.infoUnitText(this.firstTargetUnit(temperatureTargets)));
+      this.humidityRangeText = this.formatInfoAverage(humidityResult.range,
+        this.infoUnitText(this.firstTargetUnit(humidityTargets)));
+      this.pm25RangeText = this.formatInfoAverage(pm25Result.range,
+        this.infoUnitText(this.firstTargetUnit(pm25Targets)));
+      this.temperatureMoreText = this.formatInfoMore(temperatureResult.range,
+        temperatureTargets.length, this.firstTargetUnit(temperatureTargets));
+      this.humidityMoreText = this.formatInfoMore(humidityResult.range,
+        humidityTargets.length, this.firstTargetUnit(humidityTargets));
+      this.pm25MoreText = this.formatInfoMore(pm25Result.range,
+        pm25Targets.length, this.firstTargetUnit(pm25Targets));
+      this.temperatureDevices = temperatureResult.entries;
+      this.humidityDevices = humidityResult.entries;
+      this.pm25Devices = pm25Result.entries;
+      const onEntries = await this.fetchSwitchOnDevices(controller, switchTargets);
+      this.onDevices = onEntries;
+      this.onDeviceCount = onEntries.length;
+      FeedbackLogService.recordOperation('PAGE',
+        `信息页内容: 温度=${this.temperatureRangeText} 湿度=${this.humidityRangeText} PM2.5=${this.pm25RangeText} 在线设备=${this.onDeviceCount} 设备总数=${familyDevices.length}`);
+    } catch (err) {
+      if (!silent) {
+        this.infoError = err instanceof Error ? err.message : '加载信息页数据失败';
+      }
+      Logger.error('load info data failed, %{public}s',
+        err instanceof Error ? err.message : String(err));
+      if (err instanceof XiaomiAuthError) {
+        await xiaomiDataService.clearSession();
+        this.getUIContext().getRouter().replaceUrl({ url: 'pages/LoginPage' });
+      }
+    } finally {
+      this.infoFetching = false;
+      if (!silent) {
+        this.infoLoading = false;
+      }
+    }
+  }
+
+  private deviceListSummary(devices: XiaomiDevice[]): string {
+    const parts: string[] = [];
+    for (let i = 0; i < devices.length; i++) {
+      const device = devices[i];
+      parts.push(`${device.name}(${device.did},${device.online ? '在线' : '离线'},${device.roomName})`);
+    }
+    return parts.join(' | ');
+  }
+
+  private findInfoProperty(
+    spec: MIoTSpecInstance,
+    keywords: string[],
+    excludes: string[],
+    excludeUnits: string[]
+  ): InfoSpecProperty | null {
+    for (let i = 0; i < spec.services.length; i++) {
+      const service = spec.services[i];
+      for (let j = 0; j < service.properties.length; j++) {
+        const prop = service.properties[j];
+        if (!prop.readable) {
+          continue;
+        }
+        const format = prop.format.toLowerCase();
+        if (format !== 'float' && format !== 'int') {
+          continue;
+        }
+        const unitKey = prop.unit.trim().toLowerCase();
+        let unitExcluded = false;
+        for (let u = 0; u < excludeUnits.length; u++) {
+          if (unitKey === excludeUnits[u]) {
+            unitExcluded = true;
+            break;
+          }
+        }
+        if (unitExcluded) {
+          continue;
+        }
+        const text = `${prop.name} ${prop.description} ${prop.type} ${prop.unit}`.toLowerCase()
+          .split('_').join('.');
+        let matched = false;
+        for (let k = 0; k < keywords.length; k++) {
+          if (text.includes(keywords[k])) {
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
+          continue;
+        }
+        let excluded = false;
+        for (let m = 0; m < excludes.length; m++) {
+          if (text.includes(excludes[m])) {
+            excluded = true;
+            break;
+          }
+        }
+        if (excluded) {
+          continue;
+        }
+        return {
+          siid: service.iid,
+          piid: prop.iid,
+          unit: prop.unit
+        };
+      }
+    }
+    return null;
+  }
+
+  private findSwitchProperty(spec: MIoTSpecInstance): InfoSpecProperty | null {
+    for (let i = 0; i < spec.services.length; i++) {
+      const service = spec.services[i];
+      for (let j = 0; j < service.properties.length; j++) {
+        const prop = service.properties[j];
+        if (!prop.readable) {
+          continue;
+        }
+        if (prop.format.toLowerCase() !== 'bool') {
+          continue;
+        }
+        const text = `${prop.name} ${prop.description} ${prop.type}`.toLowerCase();
+        const isPowerSwitch = text.includes('switch') || text.includes('power') ||
+          prop.name === 'on';
+        if (!isPowerSwitch) {
+          continue;
+        }
+        if (text.includes('lock') || text.includes('physical control')) {
+          continue;
+        }
+        return {
+          siid: service.iid,
+          piid: prop.iid,
+          unit: ''
+        };
+      }
+    }
+    return null;
+  }
+
+  private async fetchSwitchOnDevices(
+    controller: DeviceController,
+    targets: InfoPropertyTarget[]
+  ): Promise<InfoDeviceEntry[]> {
+    if (targets.length === 0) {
+      return [];
+    }
+    const params: DevicePropertyParam[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const param: DevicePropertyParam = {
+        did: targets[i].did,
+        siid: targets[i].siid,
+        piid: targets[i].piid
+      };
+      params.push(param);
+    }
+    let results: DevicePropertyResult[] = [];
+    try {
+      results = await controller.getProperties(targets[0].did, params);
+    } catch (err) {
+      Logger.warn('fetch switch properties failed, %{public}s',
+        err instanceof Error ? err.message : String(err));
+    }
+    const valueMap = new Map<string, Object | undefined>();
+    for (let i = 0; i < results.length; i++) {
+      const key = `${String(results[i].did)}.${results[i].siid}.${results[i].piid}`;
+      valueMap.set(key, results[i].value);
+    }
+    const entries: InfoDeviceEntry[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const target = targets[i];
+      const key = `${target.did}.${target.siid}.${target.piid}`;
+      if (!this.isOnValue(valueMap.get(key))) {
+        continue;
+      }
+      const entry: InfoDeviceEntry = {
+        did: target.did,
+        name: target.name,
+        roomName: target.roomName,
+        valueText: '开启'
+      };
+      entries.push(entry);
+    }
+    return entries;
+  }
+
+  private isOnValue(value: Object | undefined): boolean {
+    return value === true || value === 1 || value === 'true' || value === '1';
+  }
+
+  private async fetchInfoMetric(
+    controller: DeviceController,
+    targets: InfoPropertyTarget[]
+  ): Promise<InfoMetricResult> {
+    if (targets.length === 0) {
+      return {
+        range: { min: 0, max: 0, count: 0, average: 0 },
+        entries: []
+      };
+    }
+    const dids: string[] = [];
+    const paramsByDid = new Map<string, DevicePropertyParam[]>();
+    for (let i = 0; i < targets.length; i++) {
+      const target = targets[i];
+      let params = paramsByDid.get(target.did);
+      if (!params) {
+        params = [];
+        paramsByDid.set(target.did, params);
+        dids.push(target.did);
+      }
+      params.push({
+        did: target.did,
+        siid: target.siid,
+        piid: target.piid
+      });
+    }
+    const valueMap = new Map<string, Object | undefined>();
+    for (let i = 0; i < dids.length; i++) {
+      const did = dids[i];
+      const params = paramsByDid.get(did);
+      if (!params || params.length === 0) {
+        continue;
+      }
+      try {
+        const results: DevicePropertyResult[] = await controller.getProperties(did, params);
+        for (let j = 0; j < results.length; j++) {
+          const key = `${String(results[j].did)}.${results[j].siid}.${results[j].piid}`;
+          valueMap.set(key, results[j].value);
+        }
+      } catch (err) {
+        Logger.warn('fetch info properties failed, %{public}s',
+          err instanceof Error ? err.message : String(err));
+      }
+    }
+    const entries: InfoDeviceEntry[] = [];
+    let min = 0;
+    let max = 0;
+    let count = 0;
+    let sum = 0;
+    for (let i = 0; i < targets.length; i++) {
+      const target = targets[i];
+      const key = `${target.did}.${target.siid}.${target.piid}`;
+      const value = Number(valueMap.get(key));
+      if (Number.isNaN(value)) {
+        continue;
+      }
+      const displayValue = this.displayTemperature(value, target.unit);
+      const entry: InfoDeviceEntry = {
+        did: target.did,
+        name: target.name,
+        roomName: target.roomName,
+        valueText: `${this.formatInfoValue(displayValue)}${this.infoUnitText(this.displayTemperatureUnit(target.unit))}`
+      };
+      entries.push(entry);
+      if (count === 0) {
+        min = value;
+        max = value;
+      } else {
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+      }
+      count++;
+      sum += value;
+    }
+    let range: InfoMetricRange = { min: 0, max: 0, count: 0, average: 0 };
+    if (count > 0) {
+      range = { min: min, max: max, count: count, average: sum / count };
+    }
+    return {
+      range: range,
+      entries: entries
+    };
+  }
+
+  private formatInfoRange(range: InfoMetricRange, unit: string): string {
+    if (range.count === 0) {
+      return '--';
+    }
+    const minText = this.formatInfoValue(this.displayTemperature(range.min, unit));
+    const maxText = this.formatInfoValue(this.displayTemperature(range.max, unit));
+    const displayUnit = this.infoUnitText(this.displayTemperatureUnit(unit));
+    if (displayUnit.length === 0) {
+      return `${minText} - ${maxText}`;
+    }
+    return `${minText}${displayUnit} - ${maxText}${displayUnit}`;
+  }
+
+  /** 概览卡主数值：取全部设备平均值 */
+  /** 概览卡主数值：显示 min~max 范围（不再用平均值） */
+  private formatInfoAverage(range: InfoMetricRange, unit: string): string {
+    if (range.count === 0) {
+      return '--';
+    }
+    const min = this.displayTemperature(range.min, unit);
+    const max = this.displayTemperature(range.max, unit);
+    const displayUnit = this.infoUnitText(this.displayTemperatureUnit(unit));
+    if (Math.abs(max - min) < 0.05) {
+      return `${this.formatInfoValue(min)}${displayUnit}`;
+    }
+    return `${this.formatInfoValue(min)}~${this.formatInfoValue(max)}${displayUnit}`;
+  }
+
+  private formatInfoMore(range: InfoMetricRange, deviceCount: number, unit: string): string {
+    if (deviceCount === 0 || range.count === 0) {
+      return '';
+    }
+    return `共 ${deviceCount} 台设备`;
+  }
+
+  private formatInfoValue(value: number): string {
+    return Number.isInteger(value) ? String(value) : value.toFixed(1);
+  }
+
+  private firstTargetUnit(targets: InfoPropertyTarget[]): string {
+    return targets.length > 0 ? targets[0].unit : '';
+  }
+
+  private displayTemperature(value: number, unit: string): number {
+    if (!this.temperatureFahrenheit) {
+      return value;
+    }
+    return isCelsiusUnit(unit) ? celsiusToFahrenheit(value) : value;
+  }
+
+  private displayTemperatureUnit(unit: string): string {
+    if (!this.temperatureFahrenheit) {
+      return unit;
+    }
+    return isCelsiusUnit(unit) ? 'fahrenheit' : unit;
+  }
+
+  private infoUnitText(unit: string): string {
+    return translateMiotUnit(unit);
+  }
+
+  private openDeviceFromSheet(did: string): void {
+    if (this.pendingDeviceDid.length > 0) {
+      return;
+    }
+    this.pendingDeviceDid = did;
+    this.closeInfoSheets();
+    setTimeout(() => {
+      this.pendingDeviceDid = '';
+      this.pageInfos.pushPathByName('deviceDetail', new DeviceDetailRouteParam(did));
+    }, 300);
+  }
+
+  private closeInfoSheets(): void {
+    this.showTemperatureSheet = false;
+    this.showHumiditySheet = false;
+    this.showPm25Sheet = false;
+    this.showOnSheet = false;
+  }
+
+  /** 环境数据设备判断：温度计/温湿度计/空气净化器等（概览温湿度只取这些设备） */
+  private isEnvironmentSensorDevice(device: XiaomiDevice): boolean {
+    const text = `${device.model} ${device.name}`.toLowerCase();
+    return text.includes('sensor') || text.includes('thermometer') || text.includes('hygro') ||
+      text.includes('miaomiaoce') || text.includes('温湿度') || text.includes('温度计') ||
+      text.includes('湿度计') || text.includes('airpurifier') || text.includes('air_purifier') ||
+      text.includes('净化');
+  }
+
+  private isDeviceExcluded(did: string): boolean {
+    return this.infoExcludedDevices.indexOf(did) >= 0;
+  }
+
+  private setDeviceExcluded(did: string, excluded: boolean): void {
+    const next: string[] = this.infoExcludedDevices.slice();
+    const idx = next.indexOf(did);
+    if (excluded && idx < 0) {
+      next.push(did);
+    }
+    if (!excluded && idx >= 0) {
+      next.splice(idx, 1);
+    }
+    this.infoExcludedDevices = next;
+    AppSettingsStore.setStringArray('infoExcludedDevices', next);
+  }
+
+  private selectAllHomesFromSheet(): void {
+    this.selectedHomeId = ALL_HOMES_ID;
+    this.selectedHomeName = ALL_HOMES_NAME;
+    AppSettingsStore.setString('selectedHomeId', ALL_HOMES_ID);
+    AppSettingsStore.setString('selectedHomeName', ALL_HOMES_NAME);
+    this.homeSelectionVersion = this.homeSelectionVersion + 1;
+    this.showFamilySheet = false;
+  }
+
+  private selectHomeFromSheet(home: XiaomiHome): void {
+    this.selectedHomeId = home.homeId;
+    this.selectedHomeName = home.name;
+    AppSettingsStore.setString('selectedHomeId', home.homeId);
+    AppSettingsStore.setString('selectedHomeName', home.name);
+    this.homeSelectionVersion = this.homeSelectionVersion + 1;
+    this.showFamilySheet = false;
+  }
+
+  private refreshInfoOnEnter(): void {
+    const now = Date.now();
+    if (now - this.lastInfoRefreshAt < 1000) {
+      return;
+    }
+    this.lastInfoRefreshAt = now;
+    this.loadInfoData(true);
+  }
+
+  private startInfoRefreshTimer(): void {
+    this.stopInfoRefreshTimer();
+    const seconds = this.infoRefreshIntervalSeconds();
+    this.infoRefreshTimer = setInterval(() => {
+      if (this.activeTab === 0) {
+        this.refreshInfoOnEnter();
+      }
+    }, seconds * 1000);
+  }
+
+  private stopInfoRefreshTimer(): void {
+    if (this.infoRefreshTimer >= 0) {
+      clearInterval(this.infoRefreshTimer);
+      this.infoRefreshTimer = -1;
+    }
+  }
+
+  private infoRefreshIntervalSeconds(): number {
+    const value = Number(this.infoRefreshInterval);
+    // 实时状态与推送频率不低于 30 秒，防止高频请求压垮设备/云端
+    return Number.isNaN(value) || value < 30 ? 30 : value;
+  }
+
+  private topOffset(): number {
+    return (this.isWearable ? 64 : CONTENT_TOP_OFFSET) + this.statusBarHeight;
+  }
+
+  private contentPadding(): number {
+    return this.isWearable ? 12 : 20;
+  }
+
+  onInfoRefreshIntervalChanged(): void {
+    if (this.activeTab === 0) {
+      this.startInfoRefreshTimer();
+    }
+  }
+
+  onTemperatureUnitChanged(): void {
+    if (this.activeTab === 0) {
+      this.loadInfoData(true);
+    }
+  }
+
+  deviceLocation(device: XiaomiDevice): string {
+    if (this.selectedHomeId === ALL_HOMES_ID) {
+      const homeTitle = this.homeTitleForDevice(device);
+      const localTitle = this.localRoomTitleForDevice(device);
+      if (localTitle.length > 0) {
+        return `${homeTitle} · ${localTitle}`;
+      }
+      if (device.roomName.length > 0) {
+        return `${homeTitle} · ${device.roomName}`;
+      }
+      return homeTitle;
+    }
+    const localTitle = this.localRoomTitleForDevice(device);
+    if (localTitle.length > 0) {
+      return localTitle;
+    }
+    return device.roomName;
+  }
+
+  private homeTitleForDevice(device: XiaomiDevice): string {
+    const homeName = device.homeName;
+    if (homeName.length === 0) {
+      return '我的家';
+    }
+    if (homeName.endsWith('家')) {
+      return homeName;
+    }
+    return `${homeName}的家`;
+  }
+
+  private localRoomTitleForDevice(device: XiaomiDevice): string {
+    for (let i = 0; i < this.localRooms.length; i++) {
+      const room = this.localRooms[i];
+      if (room.dids.indexOf(device.did) >= 0) {
+        return room.floor.length > 0 ? `${room.floor}楼 ${room.name}` : room.name;
+      }
+    }
+    return '';
+  }
+
+  private sortVisibleDevices(devices: XiaomiDevice[]): XiaomiDevice[] {
+    const favorites: XiaomiDevice[] = [];
+    const others: XiaomiDevice[] = [];
+    for (let i = 0; i < devices.length; i++) {
+      if (this.favoriteDevices.indexOf(devices[i].did) >= 0) {
+        favorites.push(devices[i]);
+      } else {
+        others.push(devices[i]);
+      }
+    }
+    const result: XiaomiDevice[] = this.applyDeviceBaseSort(favorites);
+    const rest = this.applyDeviceBaseSort(others);
+    for (let k = 0; k < rest.length; k++) {
+      result.push(rest[k]);
+    }
+    return result;
+  }
+
+  /** 收藏组内/非收藏组内各自应用的基准排序（在线优先 / 按名称 / 按房间分组） */
+  private applyDeviceBaseSort(devices: XiaomiDevice[]): XiaomiDevice[] {
+    const working = devices.slice();
+    const byOnlineDesc = (a: XiaomiDevice, b: XiaomiDevice): number => {
+      const aOnline = a.online ? 1 : 0;
+      const bOnline = b.online ? 1 : 0;
+      return bOnline - aOnline;
+    };
+    if (this.deviceSortMode === 'name') {
+      working.sort((a: XiaomiDevice, b: XiaomiDevice): number => {
+        return this.homeDisplayName(a).localeCompare(this.homeDisplayName(b), 'zh-CN');
+      });
+      return working;
+    }
+    if (this.deviceSortMode !== 'room') {
+      working.sort(byOnlineDesc);
+      return working;
+    }
+    const result: XiaomiDevice[] = [];
+    const added = new Set<string>();
+    for (let i = 0; i < this.localRooms.length; i++) {
+      const room = this.localRooms[i];
+      const roomDevices: XiaomiDevice[] = [];
+      for (let j = 0; j < room.dids.length; j++) {
+        const did = room.dids[j];
+        if (added.has(did)) {
+          continue;
+        }
+        const matched = this.findDeviceByDid(working, did);
+        if (matched !== null) {
+          roomDevices.push(matched);
+          added.add(did);
+        }
+      }
+      roomDevices.sort(byOnlineDesc);
+      for (let k = 0; k < roomDevices.length; k++) {
+        result.push(roomDevices[k]);
+      }
+    }
+    const rest: XiaomiDevice[] = [];
+    for (let i = 0; i < working.length; i++) {
+      if (!added.has(working[i].did)) {
+        rest.push(working[i]);
+      }
+    }
+    rest.sort(byOnlineDesc);
+    for (let k = 0; k < rest.length; k++) {
+      result.push(rest[k]);
+    }
+    return result;
+  }
+
+  private findDeviceByDid(devices: XiaomiDevice[], did: string): XiaomiDevice | null {
+    for (let i = 0; i < devices.length; i++) {
+      if (devices[i].did === did) {
+        return devices[i];
+      }
+    }
+    return null;
+  }
+
+  /** 设备显示名：本地覆盖名优先，其次云端名称 */
+  private homeDisplayName(device: XiaomiDevice): string {
+    const override = this.nameOverrides[device.did];
+    if (override !== undefined && override.length > 0) {
+      return override;
+    }
+    return device.name;
+  }
+
+  private isFavoriteDevice(did: string): boolean {
+    return this.favoriteDevices.indexOf(did) >= 0;
+  }
+
+  private deviceSortMenu(): MenuElement[] {
+    const items: MenuElement[] = [
+      {
+        value: this.deviceSortMode === 'smart' ? '✓ 在线优先' : '在线优先',
+        action: () => {
+          this.setDeviceSortMode('smart');
+        }
+      },
+      {
+        value: this.deviceSortMode === 'name' ? '✓ 按名称' : '按名称',
+        action: () => {
+          this.setDeviceSortMode('name');
+        }
+      },
+      {
+        value: this.deviceSortMode === 'room' ? '✓ 按房间分组' : '按房间分组',
+        action: () => {
+          this.setDeviceSortMode('room');
+        }
+      }
+    ];
+    return items;
+  }
+
+  private setDeviceSortMode(mode: string): void {
+    this.deviceSortMode = mode;
+    AppSettingsStore.setString('deviceSortMode', mode);
+    const roomFlag = mode === 'room';
+    if (this.sortDevicesByRoom !== roomFlag) {
+      AppSettingsStore.setBoolean('sortDevicesByRoom', roomFlag);
+      this.sortDevicesByRoom = roomFlag;
+    }
+    FeedbackLogService.recordOperation('UI', `切换设备排序为 ${mode}`);
+    this.applyDeviceVisibility();
+  }
+
+  private toggleDeviceFavorite(did: string): void {
+    Haptic.soft();
+    const favorite = DeviceOverrideStore.toggleFavorite(did);
+    this.favoriteDevices = DeviceOverrideStore.loadFavorites();
+    this.applyDeviceVisibility();
+    this.getUIContext().getPromptAction().showToast({
+      message: favorite ? '已收藏，设备将置顶展示' : '已取消收藏'
+    });
+  }
+
+  private openRenameSheet(did: string): void {
+    this.renameDid = did;
+    let current = '';
+    for (let i = 0; i < this.allVisibleDevices.length; i++) {
+      if (this.allVisibleDevices[i].did === did) {
+        current = this.homeDisplayName(this.allVisibleDevices[i]);
+        break;
+      }
+    }
+    this.renameValue = current;
+    this.showRenameSheet = true;
+  }
+
+  private saveDeviceRename(): void {
+    const did = this.renameDid;
+    if (did.length === 0) {
+      this.showRenameSheet = false;
+      return;
+    }
+    const trimmed = this.renameValue.trim();
+    if (trimmed.length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '设备名称不能为空' });
+      return;
+    }
+    DeviceOverrideStore.setNameOverride(did, trimmed);
+    this.nameOverrides = DeviceOverrideStore.loadNameOverrides();
+    this.showRenameSheet = false;
+    this.applyDeviceVisibility();
+    this.getUIContext().getPromptAction().showToast({ message: '已重命名' });
+  }
+
+  @Builder
+  deviceContextMenu(device: XiaomiDevice) {
+    Menu() {
+      if (this.hasQuickSwitch(device)) {
+        MenuItem({
+          content: asBool(this.quickPowerStates[device.did]) ? '关闭设备' : '打开设备',
+          symbolStartIcon: new SymbolGlyphModifier($r('sys.symbol.power'))
+        })
+          .onClick(() => {
+            this.toggleQuickSwitch(device);
+          })
+      }
+      MenuItem({
+        content: this.isFavoriteDevice(device.did) ? '取消收藏' : '收藏',
+        symbolStartIcon: new SymbolGlyphModifier($r('sys.symbol.star_fill'))
+      })
+        .onClick(() => {
+          this.toggleDeviceFavorite(device.did);
+        })
+      MenuItem({
+        content: '重命名',
+        symbolStartIcon: new SymbolGlyphModifier($r('sys.symbol.square_and_pencil'))
+      })
+        .onClick(() => {
+          this.openRenameSheet(device.did);
+        })
+      MenuItem({
+        content: '设备详情',
+        symbolStartIcon: new SymbolGlyphModifier($r('sys.symbol.info_circle'))
+      })
+        .onClick(() => {
+          if (this.isRouterDevice(device)) {
+            this.showRouterWarningDialog(device.did);
+          } else {
+            this.pageInfos.pushPathByName('deviceDetail', new DeviceDetailRouteParam(device.did));
+          }
+        })
+      MenuItem({
+        content: '添加到桌面（卡片服务）'
+      })
+        .onClick(() => {
+          this.cardDeviceDid = device.did;
+          this.cardDeviceName = this.homeDisplayName(device);
+          this.cardTitle = this.cardDeviceName;
+          this.cardDimension = '2*2';
+          this.cardContent = 'power';
+          this.cardCustomText = '';
+          this.showCardSheet = true;
+        })
+    }
+  }
+
+  private cardDevice(): XiaomiDevice | null {
+    for (let i = 0; i < this.devices.length; i++) {
+      if (this.devices[i].did === this.cardDeviceDid) {
+        return this.devices[i];
+      }
+    }
+    return null;
+  }
+
+  @Builder
+  cardConfigSheet() {
+    Column({ space: 14 }) {
+      Row() {
+        Text('添加到桌面')
+          .fontSize(17).fontWeight(FontWeight.Medium)
+          .fontColor(this.textPrimaryColor())
+          .layoutWeight(1)
+        Text('取消')
+          .fontSize(14).fontColor(HwColor.primary)
+          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+          .onClick(() => { this.showCardSheet = false; })
+      }
+      .width('100%')
+
+      Text('设备：' + this.cardDeviceName)
+        .fontSize(13).fontColor(this.textSecondaryColor())
+        .width('100%')
+
+      Column({ space: 8 }) {
+        Text('卡片规格')
+          .fontSize(13).fontColor(this.textPrimaryColor())
+        Row({ space: 8 }) {
+          ForEach(CARD_DIMENSIONS, (label: string) => {
+            Text(label)
+              .fontSize(13)
+              .fontColor(this.cardDimension === label ? '#FFFFFF' : this.textPrimaryColor())
+              .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+              .borderRadius(HwRadius.pill)
+              .backgroundColor(this.cardDimension === label ? HwColor.primary : '#FFFFFF')
+              .border({ width: 1, color: this.cardDimension === label ? HwColor.primary : '#E2EDED' })
+              .onClick(() => { this.cardDimension = label; })
+          })
+        }
+        .width('100%')
+      }
+      .alignItems(HorizontalAlign.Start)
+      .width('100%')
+
+      Column({ space: 8 }) {
+        Text('卡片内容')
+          .fontSize(13).fontColor(this.textPrimaryColor())
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(CARD_CONTENT_OPTIONS, (item: CardContentOption) => {
+            Text(item.label)
+              .fontSize(13)
+              .fontColor(this.cardContent === item.key ? '#FFFFFF' : this.textPrimaryColor())
+              .padding({ left: 12, right: 12, top: 7, bottom: 7 })
+              .borderRadius(HwRadius.pill)
+              .backgroundColor(this.cardContent === item.key ? HwColor.primary : '#FFFFFF')
+              .border({ width: 1, color: this.cardContent === item.key ? HwColor.primary : '#E2EDED' })
+              .margin({ right: 8, bottom: 8 })
+              .onClick(() => { this.cardContent = item.key; })
+          })
+        }
+        .width('100%')
+      }
+      .alignItems(HorizontalAlign.Start)
+      .width('100%')
+
+      if (this.cardContent === 'custom') {
+        TextInput({ text: this.cardCustomText, placeholder: '输入卡片上显示的文字' })
+          .width('100%')
+          .height(42)
+          .fontSize(14)
+          .fontColor(this.textPrimaryColor())
+          .backgroundColor('#FFFFFF')
+          .border({ width: 1, color: MijiaCardBorder })
+          .borderRadius(HwRadius.control)
+          .onChange((value: string) => { this.cardCustomText = value; })
+      }
+
+      TextInput({ text: this.cardTitle, placeholder: '卡片标题（可留空）' })
+        .width('100%')
+        .height(42)
+        .fontSize(14)
+        .fontColor(this.textPrimaryColor())
+        .backgroundColor('#FFFFFF')
+        .border({ width: 1, color: MijiaCardBorder })
+        .borderRadius(HwRadius.control)
+        .onChange((value: string) => { this.cardTitle = value; })
+
+      Button('打开卡片管理页')
+        .width('100%')
+        .height(44)
+        .fontSize(15)
+        .fontColor('#FFFFFF')
+        .backgroundColor(HwColor.primary)
+        .borderRadius(HwRadius.control)
+        .onClick(() => {
+          const device: XiaomiDevice | null = this.cardDevice();
+          if (device === null) {
+            this.getUIContext().getPromptAction().showToast({ message: '设备不存在或已离线' });
+            return;
+          }
+          try {
+            CardFormService.openCardManager(device, this.cardDimension, this.cardContent,
+              this.cardCustomText, this.cardTitle.length > 0 ? this.cardTitle : this.cardDeviceName);
+            this.showCardSheet = false;
+          } catch (err) {
+            const message: string = err instanceof Error ? err.message : '打开卡片服务失败';
+            this.getUIContext().getPromptAction().showToast({ message: message });
+          }
+        })
+    }
+    .width('100%')
+    .padding(HwSpace.lg)
+    .backgroundColor(MijiaSheetBackground)
+  }
+
+  @Builder
+  renameDeviceSheet() {
+    Column({ space: 0 }) {
+      Row({ space: 12 }) {
+        Text('重命名设备')
+          .fontFamily(this.appFontFamily('重命名设备'))
+          .fontWeight(this.appFontWeight())
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.textPrimaryColor())
+          .layoutWeight(1)
+        IconCircleButton({
+          symbol: $r('sys.symbol.xmark'),
+          buttonSize: 36,
+          iconSize: 18,
+          onAction: () => {
+            this.showRenameSheet = false;
+          }
+        })
+      }
+      .width('100%')
+      .height(56)
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: HwSpace.lg, right: HwSpace.lg })
+
+      Scroll() {
+        Column({ space: 14 }) {
+          Column({ space: 8 }) {
+            Text('设备名称')
+              .fontFamily(this.appFontFamily('设备名称'))
+              .fontWeight(this.appFontWeight())
+              .fontSize(14)
+              .fontColor(MijiaOverviewCardText)
+            TextInput({ text: this.renameValue, placeholder: '输入新的设备名称' })
+              .width('100%')
+              .height(44)
+              .fontSize(15)
+              .fontColor(MijiaOverviewCardText)
+              .placeholderColor(MijiaOverviewCardText)
+              .backgroundColor(Color.Transparent)
+              .caretColor(MijiaOverviewCardValue)
+              .onChange((value: string) => {
+                this.renameValue = value;
+              })
+          }
+          .alignItems(HorizontalAlign.Start)
+          .width('100%')
+          .padding(14)
+          .borderRadius(HwRadius.card)
+          .backgroundColor(MijiaOverviewCard)
+
+          Button('保存')
+            .width('100%')
+            .height(46)
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .backgroundColor(HwColor.primary)
+            .fontColor(Color.White)
+            .stateEffect(true)
+            .margin({ top: 6 })
+            .onClick(() => {
+              this.saveDeviceRename();
+            })
+        }
+        .width('100%')
+        .padding({ left: HwSpace.lg, right: HwSpace.lg, bottom: 24 })
+        .margin({ top: 12 })
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(MijiaSheetBackground)
+  }
+
+  private currentHome(): XiaomiHome | null {
+    for (let i = 0; i < this.homes.length; i++) {
+      if (this.homes[i].homeId === this.selectedHomeId) {
+        return this.homes[i];
+      }
+    }
+    return null;
+  }
+
+  private findChip(key: string): RoomChip | null {
+    for (let i = 0; i < this.roomChips.length; i++) {
+      if (this.roomChips[i].key === key) {
+        return this.roomChips[i];
+      }
+    }
+    return null;
+  }
+
+  private deviceMatchesCandidate(device: XiaomiDevice, candidate: RoomCandidate): boolean {
+    if (candidate.roomId.length > 0 && device.roomId === candidate.roomId) {
+      return true;
+    }
+    if (candidate.name.length > 0 && device.roomName === candidate.name) {
+      return true;
+    }
+    if (candidate.dids.indexOf(device.did) >= 0) {
+      return true;
+    }
+    return false;
+  }
+
+  private rebuildRoomChips(): void {
+    const chips: RoomChip[] = [];
+    chips.push({
+      key: ROOM_ALL_KEY,
+      name: '全屋',
+      roomId: '',
+      dids: [],
+      count: this.allVisibleDevices.length
+    });
+    const source = this.allVisibleDevices;
+    const candidates: RoomCandidate[] = [];
+    const knownNames = new Set<string>();
+    const home = this.currentHome();
+    if (home !== null) {
+      for (let i = 0; i < home.roomList.length; i++) {
+        const room = home.roomList[i];
+        if (knownNames.has(room.name)) {
+          continue;
+        }
+        knownNames.add(room.name);
+        candidates.push({
+          key: `room_${room.roomId}`,
+          name: room.name,
+          roomId: room.roomId,
+          dids: room.dids.slice()
+        });
+      }
+    }
+    for (let i = 0; i < source.length; i++) {
+      const name = source[i].roomName.trim();
+      if (name.length === 0 || knownNames.has(name)) {
+        continue;
+      }
+      knownNames.add(name);
+      candidates.push({
+        key: `name_${name}`,
+        name: name,
+        roomId: '',
+        dids: []
+      });
+    }
+    const consumed = new Set<string>();
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+      const dids: string[] = [];
+      for (let j = 0; j < source.length; j++) {
+        const device = source[j];
+        if (consumed.has(device.did)) {
+          continue;
+        }
+        if (!this.deviceMatchesCandidate(device, candidate)) {
+          continue;
+        }
+        dids.push(device.did);
+        consumed.add(device.did);
+      }
+      if (dids.length > 0) {
+        chips.push({
+          key: candidate.key,
+          name: candidate.name,
+          roomId: candidate.roomId,
+          dids: dids,
+          count: dids.length
+        });
+      }
+    }
+    const unroomed: string[] = [];
+    for (let i = 0; i < source.length; i++) {
+      if (!consumed.has(source[i].did)) {
+        unroomed.push(source[i].did);
+      }
+    }
+    if (unroomed.length > 0) {
+      chips.push({
+        key: ROOM_UNROOMED_KEY,
+        name: '未分类',
+        roomId: '',
+        dids: unroomed,
+        count: unroomed.length
+      });
+    }
+    this.roomChips = this.sortRoomChipsByPreference(chips);
+  }
+
+  private updateFilteredDevices(): void {
+    const keyword = this.searchKeyword.trim().toLowerCase();
+    let base: XiaomiDevice[] = this.devices;
+    if (this.selectedRoomKey !== ROOM_ALL_KEY) {
+      const chip = this.findChip(this.selectedRoomKey);
+      if (chip !== null) {
+        const roomFiltered: XiaomiDevice[] = [];
+        for (let i = 0; i < this.devices.length; i++) {
+          if (chip.dids.indexOf(this.devices[i].did) >= 0) {
+            roomFiltered.push(this.devices[i]);
+          }
+        }
+        base = roomFiltered;
+      }
+    }
+    if (keyword.length === 0) {
+      this.filteredDevices = base;
+      return;
+    }
+    const next: XiaomiDevice[] = [];
+    for (let i = 0; i < base.length; i++) {
+      const device = base[i];
+      const roomName = this.localRoomTitleForDevice(device);
+      const displayName = this.homeDisplayName(device);
+      if (displayName.toLowerCase().includes(keyword) ||
+        device.name.toLowerCase().includes(keyword) ||
+        device.model.toLowerCase().includes(keyword) ||
+        roomName.toLowerCase().includes(keyword)) {
+        next.push(device);
+      }
+    }
+    this.filteredDevices = next;
+  }
+
+  private selectRoom(key: string): void {
+    if (this.selectedRoomKey === key) {
+      return;
+    }
+    this.selectedRoomKey = key;
+    FeedbackLogService.recordOperation('UI', `切换房间 ${key}`);
+    this.updateFilteredDevices();
+    if (key === ROOM_ALL_KEY) {
+      this.refreshInfoOnEnter();
+    }
+  }
+
+  pageTitle(): string {
+    if (this.activeTab === 0) {
+      return this.selectedHomeName.length > 0 ? this.selectedHomeName : '我的家庭';
+    }
+    if (this.activeTab === 1) {
+      return '智能';
+    }
+    if (this.activeTab === 2) {
+      return '信息';
+    }
+    return '我的';
+  }
+
+  onBreakpointChange(): void {
+    const wideBp: boolean = this.widthBp === WidthBreakpoint.WIDTH_LG ||
+      this.widthBp === WidthBreakpoint.WIDTH_XL;
+    const wide: boolean = wideBp && this.pcLayoutEnabled;
+    if (wide !== this.isWideScreen) {
+      this.isWideScreen = wide;
+      if (wide) {
+        this.sideBarWidth = SIDE_BAR_WIDTH_DEFAULT;
+      }
+    }
+  }
+
+  private refreshCurrentTab(): void {
+    if (this.isWearable && this.activeTab === 1) {
+      this.loadData(true, true);
+      this.loadAccount();
+      return;
+    }
+    if (this.activeTab === 1) {
+      this.loadScenes(false);
+    } else if (this.activeTab === 2) {
+      this.buildAlerts();
+      this.refreshCloudMessages();
+    } else if (this.activeTab === 3) {
+      this.loadData(true, true);
+      this.loadAccount();
+    } else {
+      this.refreshHomeData();
+    }
+  }
+
+  private tabLabel(index: number): string {
+    if (index === 0) {
+      return '首页';
+    }
+    if (index === 1 && this.isWearable) {
+      return '我的';
+    }
+    if (index === 1) {
+      return '智能';
+    }
+    if (index === 2) {
+      return '信息';
+    }
+    return '我的';
+  }
+
+  @Builder
+  tabIcon(index: number) {
+    if (index === 0) {
+      SymbolGlyph(this.activeTab === 0 ? $r('sys.symbol.house_fill') : $r('sys.symbol.house'))
+        .fontSize(24)
+        .fontColor([this.activeTab === 0 ? HwColor.primary : this.textSecondaryColor()])
+    } else if (index === 1 && this.isWearable) {
+      SymbolGlyph((this.activeTab === 1 || this.activeTab === 3)
+        ? $r('sys.symbol.person_fill') : $r('sys.symbol.person'))
+        .fontSize(24)
+        .fontColor([(this.activeTab === 1 || this.activeTab === 3)
+          ? HwColor.primary : this.textSecondaryColor()])
+    } else if (index === 1) {
+      SymbolGlyph(this.activeTab === 1 ? $r('sys.symbol.bolt_fill') : $r('sys.symbol.bolt'))
+        .fontSize(24)
+        .fontColor([this.activeTab === 1 ? HwColor.primary : this.textSecondaryColor()])
+    } else if (index === 2) {
+      Stack({ alignContent: Alignment.TopEnd }) {
+        SymbolGlyph(this.activeTab === 2 ? $r('sys.symbol.bell_fill') : $r('sys.symbol.bell'))
+          .fontSize(24)
+          .fontColor([this.activeTab === 2 ? HwColor.primary : this.textSecondaryColor()])
+        if (this.cloudMessages.length > 0 && this.activeTab !== 2) {
+          Circle()
+            .width(8)
+            .height(8)
+            .fill(HwColor.danger)
+            .margin({ top: 1, right: 1 })
+        }
+      }
+    } else {
+      SymbolGlyph(this.activeTab === 3 ? $r('sys.symbol.person_fill') : $r('sys.symbol.person'))
+        .fontSize(24)
+        .fontColor([this.activeTab === 3 ? HwColor.primary : this.textSecondaryColor()])
+    }
+  }
+
+  @Builder
+  tabItem(index: number) {
+    Column({ space: 4 }) {
+      this.tabIcon(index)
+      Text(this.tabLabel(index))
+        .fontFamily(this.appFontFamily(this.tabLabel(index)))
+        .fontWeight(this.appFontWeight())
+        .fontSize(12)
+        .fontColor(this.activeTab === index ? HwColor.primary : this.textSecondaryColor())
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .width('100%')
+    .height(this.isWideScreen ? 64 : 56)
+    .justifyContent(FlexAlign.Center)
+  }
+
+  tabBarStyle(index: number): BottomTabBarStyle {
+    if (index === 0) {
+      const homeNormal = new SymbolGlyphModifier($r('sys.symbol.house'));
+      homeNormal.fontColor([this.textSecondaryColor()]);
+      const homeSelected = new SymbolGlyphModifier($r('sys.symbol.house_fill'));
+      homeSelected.fontColor([HwColor.primary]);
+      return new BottomTabBarStyle({ normal: homeNormal, selected: homeSelected }, '首页');
+    }
+    if (index === 1 && this.isWearable) {
+      const mineNormal = new SymbolGlyphModifier($r('sys.symbol.person'));
+      mineNormal.fontColor([this.textSecondaryColor()]);
+      const mineSelected = new SymbolGlyphModifier($r('sys.symbol.person_fill'));
+      mineSelected.fontColor([HwColor.primary]);
+      return new BottomTabBarStyle({ normal: mineNormal, selected: mineSelected }, '我的');
+    }
+    if (index === 1) {
+      const smartNormal = new SymbolGlyphModifier($r('sys.symbol.bolt'));
+      smartNormal.fontColor([this.textSecondaryColor()]);
+      const smartSelected = new SymbolGlyphModifier($r('sys.symbol.bolt_fill'));
+      smartSelected.fontColor([HwColor.primary]);
+      return new BottomTabBarStyle({ normal: smartNormal, selected: smartSelected }, '智能');
+    }
+    if (index === 2) {
+      const alertNormal = new SymbolGlyphModifier($r('sys.symbol.bell'));
+      alertNormal.fontColor([this.textSecondaryColor()]);
+      const alertSelected = new SymbolGlyphModifier($r('sys.symbol.bell_fill'));
+      alertSelected.fontColor([HwColor.primary]);
+      return new BottomTabBarStyle({ normal: alertNormal, selected: alertSelected }, '信息');
+    }
+    const mineNormal = new SymbolGlyphModifier($r('sys.symbol.person'));
+    mineNormal.fontColor([this.textSecondaryColor()]);
+    const mineSelected = new SymbolGlyphModifier($r('sys.symbol.person_fill'));
+    mineSelected.fontColor([HwColor.primary]);
+    return new BottomTabBarStyle({ normal: mineNormal, selected: mineSelected }, '我的');
+  }
+
+  @Builder
+  tabHeader() {
+    Row({ space: 12 }) {
+      Column({ space: 2 }) {
+        Text(this.pageTitle())
+          .fontFamily(this.appFontFamily(this.pageTitle()))
+          .fontWeight(this.appFontWeight())
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.White)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (this.activeTab === 0 && this.selectedHomeName.length > 0) {
+          Text(this.selectedHomeName)
+            .fontFamily(this.appFontFamily(this.selectedHomeName))
+            .fontWeight(this.appFontWeight())
+            .fontSize(12)
+            .fontColor('#8FA0A2')
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      if (this.activeTab === 0) {
+        IconCircleButton({
+          symbol: $r('sys.symbol.house'),
+          buttonSize: 36,
+          iconSize: 18,
+          tint: HwColor.primary,
+          buttonBackground: '#FFFFFF',
+          onAction: (): void => {
+            FeedbackLogService.recordOperation('UI', '打开选择家庭');
+            this.showFamilySheet = true;
+          }
+        })
+      }
+    }
+    .width('100%')
+    .height(56 + this.statusBarHeight)
+    .padding({ left: 20, right: 20, top: this.statusBarHeight })
+    .linearGradient({
+      angle: 90,
+      colors: [['#F02F8C96', 0], ['#F0409AA4', 0.5], ['#F04EA5AE', 1]]
+    })
+    .backgroundEffect({ radius: 30, saturation: 1.5, color: '#66FFFFFF' })
+  }
+
+  private isRouterDevice(device: XiaomiDevice): boolean {
+    return device.model.includes('router') || device.name.includes('路由');
+  }
+
+  private showRouterWarningDialog(did: string): void {
+    this.getUIContext().showAlertDialog({
+      title: '警告',
+      message: '本软件暂不支持控制路由器，但您仍可手动修改这些参数',
+      primaryButton: {
+        value: '取消',
+        fontColor: HwColor.primary,
+        action: (): void => {
+        }
+      },
+      secondaryButton: {
+        value: '我已知悉风险并继续',
+        fontColor: HwColor.danger,
+        action: (): void => {
+          this.pageInfos.pushPathByName('deviceDetail', new DeviceDetailRouteParam(did));
+        }
+      }
+    });
+  }
+
+  @Builder
+  roomChip(chip: RoomChip) {
+    Row({ space: 5 }) {
+      Text(chip.name)
+        .fontFamily(this.appFontFamily(chip.name))
+        .fontWeight(this.appFontWeight())
+        .fontSize(14)
+        .fontColor(this.selectedRoomKey === chip.key ? HwColor.primary : MijiaOverviewCardText)
+        .maxLines(1)
+      Text(String(chip.count))
+        .fontFamily(this.appFontFamily(String(chip.count)))
+        .fontWeight(this.appFontWeight())
+        .fontSize(11)
+        .fontColor(this.selectedRoomKey === chip.key ? HwColor.primary : MijiaOverviewCardText)
+        .opacity(0.75)
+        .maxLines(1)
+    }
+    .height(32)
+    .padding({ left: 14, right: 14 })
+    .borderRadius(16)
+    .backgroundColor(this.selectedRoomKey === chip.key ? Color.White : (this.isDarkMode ? '#66FFFFFF' : '#F2F8F8'))
+    .alignItems(VerticalAlign.Center)
+    .opacity(this.draggingRoomKey === chip.key ? 0.92 : 1)
+    .scale(this.draggingRoomKey === chip.key ? { x: 1.06, y: 1.06 } : { x: 1, y: 1 })
+    .translate({ x: this.draggingRoomKey === chip.key ? this.roomDragDx : 0 })
+    .onAreaChange((_oldArea: Area, newArea: Area) => {
+      const widthValue = newArea.width;
+      this.roomChipWidths.set(chip.key, typeof widthValue === 'number' ? widthValue : 60);
+    })
+    .zIndex(this.draggingRoomKey === chip.key ? 10 : 1)
+    .shadow(this.draggingRoomKey === chip.key ? {
+      radius: 12, color: '#40000000', offsetY: 4
+    } : { radius: 0, color: Color.Transparent })
+    .onClick(() => {
+      this.selectRoom(chip.key);
+    })
+    .gesture(GestureGroup(GestureMode.Sequence,
+      LongPressGesture({ repeat: false, duration: 350 })
+        .onAction(() => {
+          if (chip.key === ROOM_ALL_KEY || chip.key === ROOM_UNROOMED_KEY) {
+            return;
+          }
+          this.draggingRoomKey = chip.key;
+          this.roomDragConsumed = 0;
+          Haptic.soft();
+        }),
+      PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 5 })
+        .onActionUpdate((event: GestureEvent) => {
+          this.handleRoomDrag(event.offsetX);
+        })
+        .onActionEnd(() => {
+          this.endRoomDrag();
+        })
+    ))
+  }
+
+  /** 长按拖动排序：胶囊跟手移动，拖过相邻房间中线即交换（带滑动过渡） */
+  private handleRoomDrag(offsetX: number): void {
+    if (this.draggingRoomKey.length === 0) {
+      return;
+    }
+    const chips = this.roomChips;
+    let index = -1;
+    for (let i = 0; i < chips.length; i++) {
+      if (chips[i].key === this.draggingRoomKey) {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) {
+      return;
+    }
+    const effective = offsetX - this.roomDragConsumed;
+    this.roomDragDx = effective;
+    const target = effective > 0 ? index + 1 : index - 1;
+    if (target <= 0 || target >= chips.length - 1) {
+      // 不越过「全屋」/「未分类」
+      return;
+    }
+    const draggedWidth = this.roomChipWidths.get(chips[index].key) ?? 60;
+    const neighborWidth = this.roomChipWidths.get(chips[target].key) ?? 60;
+    const threshold = (draggedWidth + neighborWidth) / 2 + 4;
+    if (Math.abs(effective) < threshold) {
+      return;
+    }
+    const next = chips.slice();
+    const tmp = next[index];
+    next[index] = next[target];
+    next[target] = tmp;
+    // 拖拽基准随交换平移（进同一动画闭包：整排平滑滑动且拖拽胶囊不脱手）
+    const newConsumed = this.roomDragConsumed + (effective > 0 ? (draggedWidth + 8) : -(neighborWidth + 8));
+    this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseInOut }, (): void => {
+      this.roomChips = next;
+      this.roomDragDx = offsetX - newConsumed;
+    });
+    this.roomDragConsumed = newConsumed;
+    Haptic.soft();
+  }
+
+  private endRoomDrag(): void {
+    if (this.draggingRoomKey.length === 0) {
+      return;
+    }
+    this.draggingRoomKey = '';
+    this.roomDragConsumed = 0;
+    // 松手后跟手位移平滑归位
+    this.getUIContext().animateTo({ duration: 150, curve: Curve.EaseOut }, (): void => {
+      this.roomDragDx = 0;
+    });
+    const order: string[] = [];
+    for (let i = 1; i < this.roomChips.length - 1; i++) {
+      order.push(this.roomChips[i].name);
+    }
+    AppSettingsStore.setStringArray('home_room_order_v1', order);
+  }
+
+  /** 按保存的顺序排列房间胶囊（全屋固定最前、未分类固定最后） */
+  private sortRoomChipsByPreference(chips: RoomChip[]): RoomChip[] {
+    const saved = AppSettingsStore.getStringArray('home_room_order_v1', []);
+    if (saved.length === 0 || chips.length <= 3) {
+      return chips;
+    }
+    const order = new Map<string, number>();
+    for (let i = 0; i < saved.length; i++) {
+      order.set(saved[i], i);
+    }
+    const hasUnroomed = chips[chips.length - 1].key === ROOM_UNROOMED_KEY;
+    const head: RoomChip[] = [chips[0]];
+    const tail: RoomChip[] = hasUnroomed ? [chips[chips.length - 1]] : [];
+    const middle = chips.slice(1, chips.length - (hasUnroomed ? 1 : 0));
+    middle.sort((a: RoomChip, b: RoomChip): number => {
+      const ai = order.has(a.name) ? (order.get(a.name) as number) : 9999;
+      const bi = order.has(b.name) ? (order.get(b.name) as number) : 9999;
+      return ai - bi;
+    });
+    const result: RoomChip[] = head;
+    for (let i = 0; i < middle.length; i++) {
+      result.push(middle[i]);
+    }
+    for (let i = 0; i < tail.length; i++) {
+      result.push(tail[i]);
+    }
+    return result;
+  }
+
+  @Builder
+  roomChipBar() {
+    Scroll() {
+      Row({ space: 8 }) {
+        ForEach(this.roomChips, (chip: RoomChip) => {
+          this.roomChip(chip)
+        }, (chip: RoomChip) => chip.key)
+      }
+      .height(36)
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: 20, right: 20 })
+    }
+    .scrollable(ScrollDirection.Horizontal)
+    .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.None)
+    .width('100%')
+    .height(36)
+  }
+
+  @Builder
+  homeHeader() {
+    Column() {
+      Row({ space: 6 }) {
+        Row({ space: 4 }) {
+          Text(this.pageTitle())
+            .fontFamily(this.appFontFamily(this.pageTitle()))
+            .fontWeight(this.appFontWeight())
+            .fontSize(20)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(Color.White)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          SymbolGlyph($r('sys.symbol.chevron_down'))
+            .fontSize(14)
+            .fontColor([Color.White])
+            .opacity(0.85)
+        }
+        .height(40)
+        .padding({ left: 8, right: 8 })
+        .alignItems(VerticalAlign.Center)
+        .layoutWeight(1)
+        .onClick(() => {
+          FeedbackLogService.recordOperation('UI', '点击家庭名选择家庭');
+          this.showFamilySheet = true;
+        })
+      }
+      .width('100%')
+      .height(52)
+      .padding({ left: 20, right: 20 })
+      .alignItems(VerticalAlign.Center)
+
+      if (this.roomChips.length > 1) {
+        this.roomChipBar()
+      }
+    }
+    .width('100%')
+    .linearGradient({
+      angle: 90,
+      colors: [['#F02F8C96', 0], ['#F0409AA4', 0.5], ['#F04EA5AE', 1]]
+    })
+    .backgroundEffect({ radius: 30, saturation: 1.5, color: '#66FFFFFF' })
+    .height(this.statusBarHeight + 96)
+    .padding({ top: this.statusBarHeight })
+  }
+
+  @Styles
+  overviewCardPressedStyle() {
+    .backgroundColor(MijiaOverviewCardPressed)
+  }
+
+  /** 按设备型号/名称关键字映射系统符号，避免设备图标全是灯泡 */
+  private deviceSymbol(device: XiaomiDevice): Resource {
+    const text = `${device.model} ${device.name}`.toLowerCase();
+    if (text.includes('acpartner') || text.includes('airconditioner') || text.includes('air_conditioner') ||
+      text.includes('空调')) {
+      return $r('sys.symbol.snowflake');
+    }
+    if (text.includes('humidifier') || text.includes('dehumidifier') || text.includes('加湿') || text.includes('除湿')) {
+      return $r('sys.symbol.drop_fill');
+    }
+    if (text.includes('airpurifier') || text.includes('air_purifier') || text.includes('净化')) {
+      return $r('sys.symbol.air');
+    }
+    if (text.includes('vacuum') || text.includes('rockrobo') || text.includes('mop') || text.includes('扫地') ||
+      text.includes('拖地')) {
+      return $r('sys.symbol.robot');
+    }
+    if (text.includes('camera') || text.includes('ipc') || text.includes('cctv') || text.includes('摄像头') ||
+      text.includes('监控')) {
+      return $r('sys.symbol.video');
+    }
+    if (text.includes('lock') || text.includes('门锁')) {
+      return $r('sys.symbol.lock');
+    }
+    if (text.includes('speaker') || text.includes('sound') || text.includes('aiplayer') || text.includes('play') ||
+      text.includes('音箱') || text.includes('音响')) {
+      return $r('sys.symbol.speaker');
+    }
+    if (text.includes('curtain') || text.includes('窗帘')) {
+      return $r('sys.symbol.curtain');
+    }
+    if (text.includes('socket') || text.includes('plug') || text.includes('插座') || text.includes('排插')) {
+      return $r('sys.symbol.power');
+    }
+    if (text.includes('router') || text.includes('路由')) {
+      return $r('sys.symbol.wifi_router');
+    }
+    if (text.includes('washer') || text.includes('洗衣') || text.includes('烘干')) {
+      return $r('sys.symbol.washer');
+    }
+    if (text.includes('projector') || text.includes('投影')) {
+      return $r('sys.symbol.display');
+    }
+    if (text.includes('tv ') || text.endsWith('tv') || text.includes('television') || text.includes('电视')) {
+      return $r('sys.symbol.display');
+    }
+    if (text.includes('fan') || text.includes('风扇')) {
+      return $r('sys.symbol.wind');
+    }
+    if (text.includes('heater') || text.includes('暖') || text.includes('加热')) {
+      return $r('sys.symbol.thermometer');
+    }
+    if (text.includes('bath') || text.includes('浴') || text.includes('热水器') || text.includes('花洒')) {
+      return $r('sys.symbol.bath');
+    }
+    if (text.includes('toilet') || text.includes('马桶')) {
+      return $r('sys.symbol.toilet');
+    }
+    if (text.includes('fridge') || text.includes('冰箱')) {
+      return $r('sys.symbol.snowflake');
+    }
+    if (text.includes('kettle') || text.includes('烧水') || text.includes('水壶')) {
+      return $r('sys.symbol.thermometer');
+    }
+    if (text.includes('bed') || text.includes('床')) {
+      return $r('sys.symbol.moon_fill');
+    }
+    if (text.includes('sensor') || text.includes('传感器') || text.includes('感应')) {
+      return $r('sys.symbol.signal');
+    }
+    if (text.includes('switch') || text.includes('开关')) {
+      return $r('sys.symbol.light');
+    }
+    if (text.includes('lamp') || text.includes('light') || text.includes('yeelight') || text.includes('bulb') ||
+      text.includes('灯')) {
+      return $r('sys.symbol.lightbulb');
+    }
+    return $r('sys.symbol.lightbulb');
+  }
+
+  @Builder
+  overviewCard($$: OverviewCardConfig) {
+    Column({ space: 6 }) {
+      SymbolGlyph($$.icon)
+        .fontSize(20)
+        .fontColor([MijiaOverviewCardValue])
+      Text($$.title)
+        .fontFamily(this.appFontFamily($$.title))
+        .fontWeight(this.appFontWeight())
+        .fontSize(12)
+        .fontColor(MijiaOverviewCardText)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      Text($$.rangeText)
+        .fontFamily(this.appFontFamily($$.rangeText))
+        .fontWeight(this.appFontWeight())
+        .fontSize(22)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(MijiaOverviewCardValue)
+        .maxLines(1)
+        .minFontSize(15)
+        .maxFontSize(22)
+        .heightAdaptivePolicy(TextHeightAdaptivePolicy.MIN_FONT_SIZE_FIRST)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+      if (this.infoShowMoreContent && $$.moreText.length > 0) {
+        Text($$.moreText)
+          .fontFamily(this.appFontFamily($$.moreText))
+          .fontWeight(this.appFontWeight())
+          .fontSize(10)
+          .fontColor(MijiaOverviewCardText)
+          .opacity(0.7)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+      }
+    }
+    .width('100%')
+    .constraintSize({ minHeight: 118 })
+    .alignItems(HorizontalAlign.Start)
+    .justifyContent(FlexAlign.Start)
+    .padding(12)
+    .borderRadius(HwRadius.card)
+    .backgroundColor(MijiaOverviewCard)
+    .border({ width: 1, color: MijiaCardBorder })
+    .shadow({ radius: 14, color: MijiaCardShadow, offsetY: 3 })
+    .stateStyles({ pressed: this.overviewCardPressedStyle })
+    .transition(TransitionEffect.OPACITY.animation({ duration: 240, curve: Curve.EaseOut })
+      .combine(TransitionEffect.translate({ y: 12 })))
+  }
+
+  /** 设备加载中的骨架屏：先模拟概览卡占位（仅全屋视图），再模拟设备卡片布局的灰色占位块 */
+  @Builder
+  deviceGridSkeleton() {
+    Flex({
+      wrap: FlexWrap.Wrap,
+      justifyContent: FlexAlign.SpaceBetween,
+      alignItems: ItemAlign.Start
+    }) {
+      if (this.selectedRoomKey === ROOM_ALL_KEY) {
+        ForEach(this.overviewSkeletonPlaceholders, (item: number) => {
+          Column({ space: 8 }) {
+            Column()
+              .width(24)
+              .height(24)
+              .borderRadius(8)
+              .backgroundColor('#E5EEEE')
+
+            Column()
+              .height(12)
+              .borderRadius(4)
+              .backgroundColor('#E5EEEE')
+              .width('40%')
+
+            Column()
+              .height(22)
+              .borderRadius(4)
+              .backgroundColor('#E5EEEE')
+              .width('62%')
+          }
+          .width('48.5%')
+          .margin({ bottom: 12 })
+          .constraintSize({ minHeight: 118 })
+          .alignItems(HorizontalAlign.Start)
+          .padding(12)
+          .borderRadius(HwRadius.card)
+          .backgroundColor(MijiaOverviewCard)
+          .opacity(0.55)
+        }, (item: number) => `overview_skeleton_${item}`)
+      }
+      ForEach(this.skeletonPlaceholders, (item: number) => {
+        Column({ space: 10 }) {
+          Row() {
+            Column()
+              .width(48)
+              .height(48)
+              .borderRadius(12)
+              .backgroundColor('#E5EEEE')
+            Blank()
+          }
+          .width('100%')
+
+          Column()
+            .height(14)
+            .borderRadius(4)
+            .backgroundColor('#E5EEEE')
+            .width('72%')
+
+          Column()
+            .height(10)
+            .borderRadius(4)
+            .backgroundColor('#E5EEEE')
+            .width('46%')
+        }
+        .width('48.5%')
+        .margin({ bottom: 12 })
+        .padding(12)
+        .borderRadius(HwRadius.card)
+        .backgroundColor(MijiaOverviewCard)
+        .opacity(0.55)
+      }, (item: number) => `skeleton_${item}`)
+    }
+    .width('100%')
+  }
+
+  /**
+   * 首页家电卡：借鉴鸿米家 deviceTileCard 的竖向版式
+   * （透明底系统符号 + 名称/在线状态 + 右下角电源开关），
+   * 配色沿用本 App 的浅蓝绿 / 白底深墨，框线与「我的」页一致。
+   */
+  @Builder
+  deviceGridCard(device: XiaomiDevice) {
+    Column({ space: HwSpace.sm }) {
+      Row() {
+        // 图标：透明底直接放系统符号，不垫圆角色块（鸿米家同款做法）
+        SymbolGlyph(this.deviceSymbol(device))
+          .fontSize(32)
+          .fontColor([HwColor.primary])
+          .width(36)
+          .height(36)
+
+        Blank()
+
+        if (this.isFavoriteDevice(device.did)) {
+          IconCircleButton({
+            symbol: $r('sys.symbol.star_fill'),
+            buttonSize: 30,
+            iconSize: 15,
+            tint: '#F0A020',
+            onAction: (): void => {
+              this.toggleDeviceFavorite(device.did);
+            }
+          })
+        }
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Top)
+
+      Column({ space: 2 }) {
+        Text(this.homeDisplayName(device))
+          .fontFamily(this.appFontFamily(this.homeDisplayName(device)))
+          .fontWeight(this.appFontWeight())
+          .fontSize(15)
+          .fontColor(MijiaOverviewCardText)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+
+        Row({ space: 4 }) {
+          Column()
+            .width(6)
+            .height(6)
+            .borderRadius(3)
+            .backgroundColor(device.online ? HwColor.online : '#B8BEC7')
+          Text(this.deviceLocation(device).length > 0
+            ? this.deviceLocation(device)
+            : (device.online ? '在线' : '离线'))
+            .fontFamily(this.appFontFamily(this.deviceLocation(device)))
+            .fontWeight(this.appFontWeight())
+            .fontSize(11)
+            .fontColor(device.online ? HwColor.online : MijiaOverviewCardText)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Start)
+
+      // 开关行恒占高：有无电源属性的卡片等高，网格才不会歪
+      Row() {
+        Blank()
+        // quickPowerVersion 作为渲染依赖：属性后台加载完成后触发此块重新求值
+        if (this.quickPowerVersion >= 0 && this.hasQuickSwitch(device)) {
+          Stack({ alignContent: Alignment.Center }) {
+            Circle()
+              .width(34)
+              .height(34)
+              .fill(asBool(this.quickPowerStates[device.did]) ? HwColor.online : '#D7E4E5')
+            SymbolGlyph($r('sys.symbol.power'))
+              .fontSize(16)
+              .fontColor([Color.White])
+          }
+          .width(34)
+          .height(34)
+          .onClick(() => {
+            this.quickSwitchTapHandled = true;
+            this.toggleQuickSwitch(device);
+          })
+        }
+      }
+      .width('100%')
+      .height(34)
+      .alignItems(VerticalAlign.Center)
+    }
+    .width('100%')
+    .padding(HwSpace.md)
+    .borderRadius(HwRadius.card)
+    .backgroundColor(MijiaOverviewCard)
+    .border({ width: 1, color: MijiaCardBorder })
+    .shadow({ radius: 14, color: MijiaCardShadow, offsetY: 3 })
+    .stateStyles({ pressed: this.overviewCardPressedStyle })
+    .onClick(() => {
+      if (this.quickSwitchTapHandled) {
+        // 点的是快捷开关，不进入详情页
+        this.quickSwitchTapHandled = false;
+        return;
+      }
+      Haptic.soft();
+      FeedbackLogService.recordOperation('UI', `点击设备 ${this.homeDisplayName(device)} (${device.did})`);
+      if (this.isRouterDevice(device)) {
+        this.showRouterWarningDialog(device.did);
+      } else {
+        this.pageInfos.pushPathByName('deviceDetail', new DeviceDetailRouteParam(device.did));
+      }
+    })
+    .bindContextMenu(this.deviceContextMenu(device), ResponseType.LongPress)
+    .transition(TransitionEffect.OPACITY.animation({ duration: 240, curve: Curve.EaseOut })
+      .combine(TransitionEffect.translate({ y: 12 })))
+  }
+
+  @Builder
+  homeTabContent() {
+    Column({ space: 12 }) {
+      Blank().height(this.isWideScreen ? 12 : (this.isWearable ? this.topOffset() : 0))
+
+      Row({ space: 8 }) {
+        SymbolGlyph($r('sys.symbol.magnifyingglass'))
+          .fontSize(16)
+          .fontColor([this.textSecondaryColor()])
+        TextInput({ text: this.searchKeyword, placeholder: '搜索设备名称、型号或房间' })
+          .layoutWeight(1)
+          .height(36)
+          .backgroundColor(Color.Transparent)
+          .padding(0)
+          .fontSize(14)
+          .placeholderFont({ size: 14 })
+          .fontColor(this.textPrimaryColor())
+          .placeholderColor(this.textSecondaryColor())
+          .caretColor(HwColor.primary)
+          .onChange((value: string) => {
+            this.searchKeyword = value;
+            this.updateFilteredDevices();
+          })
+        if (this.searchKeyword.length > 0) {
+          SymbolGlyph($r('sys.symbol.xmark_circle_fill'))
+            .fontSize(16)
+            .fontColor([this.textSecondaryColor()])
+            .onClick(() => {
+              this.searchKeyword = '';
+              this.updateFilteredDevices();
+            })
+        }
+        SymbolGlyph($r('sys.symbol.line_3_horizontal'))
+          .fontSize(18)
+          .fontColor([this.textSecondaryColor()])
+          .bindMenu(this.deviceSortMenu())
+      }
+      .width('100%')
+      .height(38)
+      .padding({ left: 14, right: 14 })
+      .borderRadius(19)
+      .backgroundColor(MijiaOverviewCard)
+      .bindSheet($$this.showRenameSheet, this.renameDeviceSheet(), {
+        height: SheetSize.MEDIUM,
+        dragBar: true,
+        backgroundColor: MijiaSheetBackground,
+        showClose: false
+      })
+
+      if (this.loading) {
+        this.deviceGridSkeleton()
+      }
+      if (this.errorMessage.length > 0) {
+        Text(this.errorMessage)
+          .fontFamily(this.appFontFamily(this.errorMessage))
+          .fontWeight(this.appFontWeight())
+          .fontSize(14)
+          .fontColor(HwColor.danger)
+      }
+      if (this.statusMessage.length > 0) {
+        Text(this.statusMessage)
+          .fontFamily(this.appFontFamily(this.statusMessage))
+          .fontWeight(this.appFontWeight())
+          .fontSize(14)
+          .fontColor(HwColor.primary)
+      }
+      if (!this.loading && this.errorMessage.length === 0 && this.devices.length > 0 && this.filteredDevices.length === 0) {
+        Text(this.searchKeyword.trim().length > 0 ? '没有匹配的设备，换个关键词试试' : (this.selectedRoomKey === ROOM_ALL_KEY ? '没有设备' : '该房间暂无设备'))
+          .fontFamily(this.appFontFamily(this.searchKeyword.trim().length > 0 ? '没有匹配的设备，换个关键词试试' : (this.selectedRoomKey === ROOM_ALL_KEY ? '没有设备' : '该房间暂无设备')))
+          .fontWeight(this.appFontWeight())
+          .fontSize(14)
+          .fontColor(this.textSecondaryColor())
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .padding({ top: 24, bottom: 24 })
+      }
+
+      // 概览卡片：可在设置中关闭（showOverviewCards）
+      if (this.showOverviewCards && this.selectedRoomKey === ROOM_ALL_KEY) {
+        Flex({
+          wrap: FlexWrap.Wrap,
+          justifyContent: FlexAlign.SpaceBetween,
+          alignItems: ItemAlign.Start
+        }) {
+          Column() {
+            this.overviewCard({
+              title: '温度',
+              rangeText: this.temperatureRangeText,
+              moreText: this.temperatureMoreText,
+              sheetIndex: 0,
+              icon: $r('sys.symbol.thermometer')
+            })
+          }
+          .width('48.5%')
+          .margin({ bottom: 12 })
+          .onClick(() => {
+            this.showTemperatureSheet = true;
+          })
+          .bindSheet($$this.showTemperatureSheet, this.temperatureDeviceSheet(), {
+            height: SheetSize.MEDIUM,
+            dragBar: true,
+            backgroundColor: MijiaSheetBackground,
+            showClose: false,
+          })
+
+          Column() {
+            this.overviewCard({
+              title: '湿度',
+              rangeText: this.humidityRangeText,
+              moreText: this.humidityMoreText,
+              sheetIndex: 1,
+              icon: $r('sys.symbol.drop')
+            })
+          }
+          .width('48.5%')
+          .margin({ bottom: 12 })
+          .onClick(() => {
+            this.showHumiditySheet = true;
+          })
+          .bindSheet($$this.showHumiditySheet, this.humidityDeviceSheet(), {
+            height: SheetSize.MEDIUM,
+            dragBar: true,
+            backgroundColor: MijiaSheetBackground,
+            showClose: false,
+          })
+
+          Column() {
+            this.overviewCard({
+              title: 'PM2.5',
+              rangeText: this.pm25RangeText,
+              moreText: this.pm25MoreText,
+              sheetIndex: 2,
+              icon: $r('sys.symbol.leaf')
+            })
+          }
+          .width('48.5%')
+          .margin({ bottom: 12 })
+          .onClick(() => {
+            this.showPm25Sheet = true;
+          })
+          .bindSheet($$this.showPm25Sheet, this.pm25DeviceSheet(), {
+            height: SheetSize.MEDIUM,
+            dragBar: true,
+            backgroundColor: MijiaSheetBackground,
+            showClose: false,
+          })
+
+          Column() {
+            this.overviewCard({
+              title: '开启中',
+              rangeText: `${this.onDeviceCount} 台`,
+              moreText: '',
+              sheetIndex: 3,
+              icon: $r('sys.symbol.power')
+            })
+          }
+          .width('48.5%')
+          .margin({ bottom: 12 })
+          .onClick(() => {
+            this.showOnSheet = true;
+          })
+          .bindSheet($$this.showOnSheet, this.onDeviceSheet(), {
+            height: SheetSize.MEDIUM,
+            dragBar: true,
+            backgroundColor: MijiaSheetBackground,
+            showClose: false,
+          })
+        }
+        .width('100%')
+      }
+
+      Flex({
+        wrap: FlexWrap.Wrap,
+        justifyContent: FlexAlign.SpaceBetween,
+        alignItems: ItemAlign.Start
+      }) {
+        ForEach(this.filteredDevices, (device: XiaomiDevice) => {
+          Column() {
+            this.deviceGridCard(device)
+          }
+          .width('48.5%')
+          .margin({ bottom: 12 })
+        }, (device: XiaomiDevice) => device.did)
+      }
+      .width('100%')
+
+      Blank()
+        .height(this.isWideScreen ? 24 : BOTTOM_BAR_HEIGHT + BOTTOM_BAR_MARGIN + this.navigationBarHeight + 24)
+    }
+    .width('100%')
+    .constraintSize({
+      maxWidth: this.isWideScreen ? MAX_CONTENT_WIDTH : '100%'
+    })
+    .padding({ left: this.contentPadding(), right: this.contentPadding() })
+  }
+
+  @Builder
+  mineTabContent() {
+    Column({ space: 14 }) {
+      // 我的页无大标题头，从状态栏下方开始显示即可
+      Blank().height(this.isWideScreen ? 12 : (this.isWearable ? this.topOffset() : 12))
+
+      Column({ space: 12 }) {
+        Row({ space: 12 }) {
+          if (this.accountAvatarUrl.length > 0) {
+            Image(this.accountAvatarUrl)
+              .width(56)
+              .height(56)
+              .borderRadius(28)
+              .objectFit(ImageFit.Cover)
+          } else {
+            Stack({ alignContent: Alignment.Center }) {
+              SymbolGlyph($r('sys.symbol.person_fill'))
+                .fontSize(28)
+                .fontColor([MijiaOverviewCardText])
+            }
+            .width(56)
+            .height(56)
+            .borderRadius(28)
+            .backgroundColor('#E5EEEE')
+          }
+          Column({ space: 4 }) {
+            Text(this.accountNickname || '已登录用户')
+              .fontFamily(this.appFontFamily(this.accountNickname || '已登录用户'))
+              .fontWeight(this.appFontWeight())
+              .fontSize(17)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(MijiaOverviewCardText)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(this.accountUserId || '未获取到账号')
+              .fontFamily(this.appFontFamily(this.accountUserId || '未获取到账号'))
+              .fontWeight(this.appFontWeight())
+              .fontSize(13)
+              .fontColor(MijiaOverviewCardText)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+
+        Divider()
+          .color('#E2EDED')
+          .margin({ top: HwSpace.md, bottom: HwSpace.md })
+
+        Row({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.arrow_right_to_line'))
+            .fontSize(18)
+            .fontColor([HwColor.danger])
+          Text('退出登录')
+            .fontFamily(this.appFontFamily('退出登录'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontColor(HwColor.danger)
+            .layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([MijiaOverviewCardText])
+        }
+        .width('100%')
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          this.showLogoutDialog();
+        })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .width('100%')
+      .padding(HwSpace.lg)
+      .borderRadius(HwRadius.card)
+      .backgroundColor(MijiaOverviewCard)
+      .border({ width: 1, color: MijiaCardBorder })
+      .clip(true)
+
+      Column() {
+        Row({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.leaf'))
+            .fontSize(20)
+            .fontColor([MijiaOverviewCardText])
+          Text('耗材中心')
+            .fontFamily(this.appFontFamily('耗材中心'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontColor(MijiaOverviewCardText)
+            .layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([MijiaOverviewCardText])
+        }
+        .width('100%')
+        .padding(HwSpace.lg)
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          FeedbackLogService.recordOperation('UI', '进入耗材中心');
+          this.getUIContext().getRouter().pushUrl({ url: 'pages/ConsumablesPage' });
+        })
+
+        Divider()
+          .color('#E2EDED')
+          .margin({ left: HwSpace.lg, right: HwSpace.lg })
+
+        Row({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.house_fill'))
+            .fontSize(20)
+            .fontColor([MijiaOverviewCardText])
+          Text('房间管理')
+            .fontFamily(this.appFontFamily('房间管理'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontColor(MijiaOverviewCardText)
+            .layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([MijiaOverviewCardText])
+        }
+        .width('100%')
+        .padding(HwSpace.lg)
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          FeedbackLogService.recordOperation('UI', '进入房间管理页');
+          this.getUIContext().getRouter().pushUrl({ url: 'pages/RoomsPage' });
+        })
+
+        Divider()
+          .color('#E2EDED')
+          .margin({ left: HwSpace.lg, right: HwSpace.lg })
+
+        Row({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.gearshape'))
+            .fontSize(20)
+            .fontColor([MijiaOverviewCardText])
+          Text('设备管理')
+            .fontFamily(this.appFontFamily('设备管理'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontColor(MijiaOverviewCardText)
+            .layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([MijiaOverviewCardText])
+        }
+        .width('100%')
+        .padding(HwSpace.lg)
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          FeedbackLogService.recordOperation('UI', '进入设备管理页');
+          this.pageInfos.pushPathByName('deviceManage', new DeviceManageRouteParam());
+        })
+      }
+      .width('100%')
+      .borderRadius(HwRadius.card)
+      .backgroundColor(MijiaOverviewCard)
+      .border({ width: 1, color: MijiaCardBorder })
+      .clip(true)
+
+      Column() {
+        Row({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.gearshape'))
+            .fontSize(20)
+            .fontColor([MijiaOverviewCardText])
+          Text('设置')
+            .fontFamily(this.appFontFamily('设置'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontColor(MijiaOverviewCardText)
+            .layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([MijiaOverviewCardText])
+        }
+        .width('100%')
+        .padding(HwSpace.lg)
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          FeedbackLogService.recordOperation('UI', '进入设置页');
+          this.getUIContext().getRouter().pushUrl({ url: 'pages/SettingsPage' });
+        })
+
+        Divider()
+          .color('#E2EDED')
+          .margin({ left: HwSpace.lg, right: HwSpace.lg })
+
+        Row({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.envelope'))
+            .fontSize(20)
+            .fontColor([MijiaOverviewCardText])
+          Text('反馈')
+            .fontFamily(this.appFontFamily('反馈'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontColor(MijiaOverviewCardText)
+            .layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([MijiaOverviewCardText])
+        }
+        .width('100%')
+        .padding(HwSpace.lg)
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          FeedbackLogService.recordOperation('UI', '进入反馈页');
+          this.getUIContext().getRouter().pushUrl({ url: 'pages/FeedbackPage' });
+        })
+
+        Divider()
+          .color('#E2EDED')
+          .margin({ left: HwSpace.lg, right: HwSpace.lg })
+
+        Row({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.info_circle'))
+            .fontSize(20)
+            .fontColor([MijiaOverviewCardText])
+          Text('关于')
+            .fontFamily(this.appFontFamily('关于'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontColor(MijiaOverviewCardText)
+            .layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([MijiaOverviewCardText])
+        }
+        .width('100%')
+        .padding(HwSpace.lg)
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          FeedbackLogService.recordOperation('UI', '进入关于页');
+          this.getUIContext().getRouter().pushUrl({ url: 'pages/AboutPage' });
+        })
+      }
+      .width('100%')
+      .borderRadius(HwRadius.card)
+      .backgroundColor(MijiaOverviewCard)
+      .border({ width: 1, color: MijiaCardBorder })
+      .clip(true)
+
+      Blank()
+        .height(this.isWideScreen ? 24 : BOTTOM_BAR_HEIGHT + BOTTOM_BAR_MARGIN + this.navigationBarHeight + 24)
+    }
+    .width('100%')
+    .constraintSize({
+      maxWidth: this.isWideScreen ? MAX_CONTENT_WIDTH : '100%'
+    })
+    .padding({ left: this.contentPadding(), right: this.contentPadding() })
+  }
+
+  @Builder
+  infoMetricCard($$: InfoMetricCardConfig) {
+    Stack({ alignContent: Alignment.Center }) {
+      Column({ space: 6 }) {
+        Text($$.title)
+          .fontFamily(this.appFontFamily($$.title))
+          .fontWeight(this.appFontWeight())
+          .fontSize(20)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(MijiaOverviewCardText)
+        Text($$.rangeText)
+          .fontFamily(this.appFontFamily($$.rangeText))
+          .fontWeight(this.appFontWeight())
+          .fontSize(13)
+          .fontColor(MijiaOverviewCardText)
+        if (this.infoShowMoreContent && $$.moreText.length > 0) {
+          Text($$.moreText)
+            .fontFamily(this.appFontFamily($$.moreText))
+            .fontWeight(this.appFontWeight())
+            .fontSize(13)
+            .fontColor(MijiaOverviewCardText)
+        }
+      }
+      .width('100%')
+      .padding({ left: HwSpace.lg, right: HwSpace.lg })
+    }
+    .width('100%')
+    .constraintSize({ minHeight: INFO_CARD_HEIGHT })
+    .borderRadius(HwRadius.card)
+    .backgroundColor(MijiaOverviewCard)
+    .border({ width: 1, color: MijiaCardBorder })
+    .shadow({ radius: 12, color: MijiaCardShadow, offsetY: 2 })
+    .clip(true)
+  }
+
+  @Builder
+  infoDeviceRow(entry: InfoDeviceEntry) {
+    Row({ space: 12 }) {
+      Column({ space: 2 }) {
+        Text(entry.name)
+          .fontFamily(this.appFontFamily(entry.name))
+          .fontWeight(this.appFontWeight())
+          .fontSize(15)
+          .fontColor(MijiaOverviewCardText)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (entry.roomName.length > 0) {
+          Text(entry.roomName)
+            .fontFamily(this.appFontFamily(entry.roomName))
+            .fontWeight(this.appFontWeight())
+            .fontSize(12)
+            .fontColor(MijiaOverviewCardText)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Text(entry.valueText)
+        .fontFamily(this.appFontFamily(entry.valueText))
+        .fontWeight(this.appFontWeight())
+        .fontSize(15)
+        .fontColor(MijiaOverviewCardValue)
+      SymbolGlyph($r('sys.symbol.chevron_right'))
+        .fontSize(16)
+        .fontColor([MijiaOverviewCardText])
+    }
+    .width('100%')
+    .padding(HwSpace.md)
+    .borderRadius(HwRadius.control)
+    .backgroundColor(MijiaOverviewCard)
+    .border({ width: 1, color: MijiaCardBorder })
+    .stateStyles({ pressed: this.overviewCardPressedStyle })
+    .onClick(() => {
+      this.openDeviceFromSheet(entry.did);
+    })
+  }
+
+  @Builder
+  temperatureDeviceSheet() {
+    Column({ space: 0 }) {
+      Row({ space: 12 }) {
+        Text(`提供温度的设备（${this.temperatureDevices.length}）`)
+          .fontFamily(this.appFontFamily(`提供温度的设备（${this.temperatureDevices.length}）`))
+          .fontWeight(this.appFontWeight())
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.textPrimaryColor())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        IconCircleButton({
+          symbol: $r('sys.symbol.xmark'),
+          buttonSize: 36,
+          iconSize: 18,
+          onAction: () => {
+            this.showTemperatureSheet = false;
+          }
+        })
+      }
+      .width('100%')
+      .height(56)
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: HwSpace.lg, right: HwSpace.lg })
+
+      Column({ space: 10 }) {
+        if (this.temperatureDevices.length === 0) {
+          Text('暂无提供温度的设备')
+            .fontFamily(this.appFontFamily('暂无提供温度的设备'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(14)
+            .fontColor(this.textSecondaryColor())
+            .padding({ top: 12, bottom: 12 })
+        }
+        ForEach(this.temperatureDevices, (entry: InfoDeviceEntry) => {
+          this.infoDeviceRow(entry)
+        }, (entry: InfoDeviceEntry) => entry.did)
+      }
+      .width('100%')
+      .padding({ left: HwSpace.lg, right: HwSpace.lg, bottom: 24 })
+      .margin({ top: 12 })
+    }
+    .width('100%')
+    .backgroundColor(MijiaSheetBackground)
+  }
+
+  @Builder
+  humidityDeviceSheet() {
+    Column({ space: 0 }) {
+      Row({ space: 12 }) {
+        Text(`提供湿度的设备（${this.humidityDevices.length}）`)
+          .fontFamily(this.appFontFamily(`提供湿度的设备（${this.humidityDevices.length}）`))
+          .fontWeight(this.appFontWeight())
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.textPrimaryColor())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        IconCircleButton({
+          symbol: $r('sys.symbol.xmark'),
+          buttonSize: 36,
+          iconSize: 18,
+          onAction: () => {
+            this.showHumiditySheet = false;
+          }
+        })
+      }
+      .width('100%')
+      .height(56)
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: HwSpace.lg, right: HwSpace.lg })
+
+      Column({ space: 10 }) {
+        if (this.humidityDevices.length === 0) {
+          Text('暂无提供湿度的设备')
+            .fontFamily(this.appFontFamily('暂无提供湿度的设备'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(14)
+            .fontColor(this.textSecondaryColor())
+            .padding({ top: 12, bottom: 12 })
+        }
+        ForEach(this.humidityDevices, (entry: InfoDeviceEntry) => {
+          this.infoDeviceRow(entry)
+        }, (entry: InfoDeviceEntry) => entry.did)
+      }
+      .width('100%')
+      .padding({ left: HwSpace.lg, right: HwSpace.lg, bottom: 24 })
+      .margin({ top: 12 })
+    }
+    .width('100%')
+    .backgroundColor(MijiaSheetBackground)
+  }
+
+  @Builder
+  pm25DeviceSheet() {
+    Column({ space: 0 }) {
+      Row({ space: 12 }) {
+        Text(`提供PM2.5的设备（${this.pm25Devices.length}）`)
+          .fontFamily(this.appFontFamily(`提供PM2.5的设备（${this.pm25Devices.length}）`))
+          .fontWeight(this.appFontWeight())
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.textPrimaryColor())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        IconCircleButton({
+          symbol: $r('sys.symbol.xmark'),
+          buttonSize: 36,
+          iconSize: 18,
+          onAction: () => {
+            this.showPm25Sheet = false;
+          }
+        })
+      }
+      .width('100%')
+      .height(56)
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: HwSpace.lg, right: HwSpace.lg })
+
+      Column({ space: 10 }) {
+        if (this.pm25Devices.length === 0) {
+          Text('暂无提供PM2.5的设备')
+            .fontFamily(this.appFontFamily('暂无提供PM2.5的设备'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(14)
+            .fontColor(this.textSecondaryColor())
+            .padding({ top: 12, bottom: 12 })
+        }
+        ForEach(this.pm25Devices, (entry: InfoDeviceEntry) => {
+          this.infoDeviceRow(entry)
+        }, (entry: InfoDeviceEntry) => entry.did)
+      }
+      .width('100%')
+      .padding({ left: HwSpace.lg, right: HwSpace.lg, bottom: 24 })
+      .margin({ top: 12 })
+    }
+    .width('100%')
+    .backgroundColor(MijiaSheetBackground)
+  }
+
+  @Builder
+  onDeviceSheet() {
+    Column({ space: 0 }) {
+      Row({ space: 12 }) {
+        Text(`开启中的设备（${this.onDevices.length}）`)
+          .fontFamily(this.appFontFamily(`开启中的设备（${this.onDevices.length}）`))
+          .fontWeight(this.appFontWeight())
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.textPrimaryColor())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        IconCircleButton({
+          symbol: $r('sys.symbol.xmark'),
+          buttonSize: 36,
+          iconSize: 18,
+          onAction: () => {
+            this.showOnSheet = false;
+          }
+        })
+      }
+      .width('100%')
+      .height(56)
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: HwSpace.lg, right: HwSpace.lg })
+
+      Column({ space: 10 }) {
+        if (this.onDevices.length === 0) {
+          Text('当前没有开启中的设备')
+            .fontFamily(this.appFontFamily('当前没有开启中的设备'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(14)
+            .fontColor(this.textSecondaryColor())
+            .padding({ top: 12, bottom: 12 })
+        }
+        ForEach(this.onDevices, (entry: InfoDeviceEntry) => {
+          this.infoDeviceRow(entry)
+        }, (entry: InfoDeviceEntry) => entry.did)
+      }
+      .width('100%')
+      .padding({ left: HwSpace.lg, right: HwSpace.lg, bottom: 24 })
+      .margin({ top: 12 })
+    }
+    .width('100%')
+    .backgroundColor(MijiaSheetBackground)
+  }
+
+  @Builder
+  excludeDeviceRow(device: XiaomiDevice) {
+    Row({ space: 12 }) {
+      Column({ space: 2 }) {
+        Text(device.name)
+          .fontFamily(this.appFontFamily(device.name))
+          .fontWeight(this.appFontWeight())
+          .fontSize(15)
+          .fontColor(MijiaOverviewCardText)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (device.roomName.length > 0) {
+          Text(device.roomName)
+            .fontFamily(this.appFontFamily(device.roomName))
+            .fontWeight(this.appFontWeight())
+            .fontSize(12)
+            .fontColor(MijiaOverviewCardText)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Checkbox()
+        .select(this.isDeviceExcluded(device.did))
+        .selectedColor(HwColor.primary)
+        .onChange((checked: boolean) => {
+          this.setDeviceExcluded(device.did, checked);
+        })
+    }
+    .width('100%')
+    .padding(HwSpace.md)
+    .borderRadius(HwRadius.control)
+    .backgroundColor(MijiaOverviewCard)
+    .stateStyles({ pressed: this.overviewCardPressedStyle })
+  }
+
+  @Builder
+  excludeDeviceSheet() {
+    Column({ space: 0 }) {
+      Row({ space: 12 }) {
+        Text('信息页排除设备')
+          .fontFamily(this.appFontFamily('信息页排除设备'))
+          .fontWeight(this.appFontWeight())
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.textPrimaryColor())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        IconCircleButton({
+          symbol: $r('sys.symbol.xmark'),
+          buttonSize: 36,
+          iconSize: 18,
+          onAction: () => {
+            this.showExcludeSheet = false;
+          }
+        })
+      }
+      .width('100%')
+      .height(56)
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: HwSpace.lg, right: HwSpace.lg })
+
+      Text('勾选后该设备的数据不再计入信息页')
+        .fontFamily(this.appFontFamily('勾选后该设备的数据不再计入信息页'))
+        .fontWeight(this.appFontWeight())
+        .fontSize(12)
+        .fontColor(this.textSecondaryColor())
+        .width('100%')
+        .padding({ left: HwSpace.lg, right: HwSpace.lg, bottom: 8 })
+
+      if (this.devices.length === 0) {
+        Text('暂无设备')
+          .fontFamily(this.appFontFamily('暂无设备'))
+          .fontWeight(this.appFontWeight())
+          .fontSize(14)
+          .fontColor(this.textSecondaryColor())
+          .padding({ top: 24, bottom: 24 })
+      } else {
+        Scroll() {
+          Column({ space: 8 }) {
+            ForEach(this.devices, (device: XiaomiDevice) => {
+              this.excludeDeviceRow(device)
+            }, (device: XiaomiDevice) => device.did)
+          }
+          .width('100%')
+          .padding({ left: HwSpace.lg, right: HwSpace.lg, bottom: 24 })
+          .margin({ top: 12 })
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(MijiaSheetBackground)
+  }
+
+  @Builder
+  familyHomeRow(home: XiaomiHome, selected: boolean) {
+    Row({ space: 10 }) {
+      Column({ space: 4 }) {
+        Text(home.name)
+          .fontFamily(this.appFontFamily(home.name))
+          .fontWeight(this.appFontWeight())
+          .fontSize(17)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(MijiaOverviewCardText)
+        Text(`${home.roomList.length} 个房间`)
+          .fontFamily(this.appFontFamily(`${home.roomList.length} 个房间`))
+          .fontWeight(this.appFontWeight())
+          .fontSize(13)
+          .fontColor(MijiaOverviewCardText)
+      }
+      .alignItems(HorizontalAlign.Start)
+      Blank()
+      if (selected) {
+        Text('当前')
+          .fontFamily(this.appFontFamily('当前'))
+          .fontWeight(this.appFontWeight())
+          .fontSize(12)
+          .fontColor(MijiaOverviewCardValue)
+      }
+    }
+    .width('100%')
+    .padding(HwSpace.lg)
+    .borderRadius(HwRadius.card)
+    .backgroundColor(MijiaOverviewCard)
+    .border({
+      width: selected ? 1.5 : 1,
+      color: selected ? MijiaOverviewCardValue : MijiaCardBorder
+    })
+    .shadow({ radius: 12, color: MijiaCardShadow, offsetY: 2 })
+    .stateStyles({ pressed: this.overviewCardPressedStyle })
+    .onClick(() => {
+      this.selectHomeFromSheet(home);
+    })
+  }
+
+  /** 家庭选择覆盖层：不依赖 bindSheet，首页家庭入口点击必定有响应 */
+  @Builder
+  familySelectOverlay() {
+    Stack() {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#33000000')
+        .hitTestBehavior(HitTestMode.Block)
+        .onClick(() => {
+          this.showFamilySheet = false;
+        })
+
+      Column() {
+        this.familySelectSheet()
+      }
+      .width('100%')
+      .height('76%')
+      .margin({ top: 22 + this.statusBarHeight, bottom: 18 })
+      .borderRadius(24)
+      .backgroundColor('#FFFFFF')
+      .border({ width: 1, color: '#E3ECEE' })
+      .shadow({ radius: 28, color: MijiaCardShadow, offsetY: 8 })
+      .clip(true)
+      // 面板本身必须可命中且子节点可点：Block 会屏蔽「全部设备」和家庭行的 onClick
+      .hitTestBehavior(HitTestMode.Default)
+      .zIndex(2)
+    }
+    .width('100%')
+    .height('100%')
+    .zIndex(1000)
+  }
+
+  @Builder
+  familySelectSheet() {
+    Column({ space: 0 }) {
+      Row({ space: 12 }) {
+        Text('选择家庭')
+          .fontFamily(this.appFontFamily('选择家庭'))
+          .fontWeight(this.appFontWeight())
+          .fontSize(16)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.textPrimaryColor())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        IconCircleButton({
+          symbol: $r('sys.symbol.xmark'),
+          buttonSize: 36,
+          iconSize: 18,
+          onAction: () => {
+            this.showFamilySheet = false;
+          }
+        })
+      }
+      .width('100%')
+      .height(56)
+      .alignItems(VerticalAlign.Center)
+      .padding({ left: HwSpace.lg, right: HwSpace.lg })
+
+      if (this.homes.length === 0) {
+        Text('暂无家庭，请先下拉刷新')
+          .fontFamily(this.appFontFamily('暂无家庭，请先下拉刷新'))
+          .fontWeight(this.appFontWeight())
+          .fontSize(14)
+          .fontColor(this.textSecondaryColor())
+          .padding({ top: 24, bottom: 24 })
+      } else {
+        Scroll() {
+          Column({ space: 10 }) {
+            Row({ space: 10 }) {
+              Column({ space: 4 }) {
+                Text(ALL_HOMES_NAME)
+                  .fontFamily(this.appFontFamily(ALL_HOMES_NAME))
+                  .fontWeight(this.appFontWeight())
+                  .fontSize(17)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(MijiaOverviewCardText)
+                Text('显示账号下所有家庭的所有设备')
+                  .fontFamily(this.appFontFamily('显示账号下所有家庭的所有设备'))
+                  .fontWeight(this.appFontWeight())
+                  .fontSize(13)
+                  .fontColor(MijiaOverviewCardText)
+              }
+              .alignItems(HorizontalAlign.Start)
+              Blank()
+              if (this.selectedHomeId === ALL_HOMES_ID) {
+                Text('当前')
+                  .fontFamily(this.appFontFamily('当前'))
+                  .fontWeight(this.appFontWeight())
+                  .fontSize(12)
+                  .fontColor(MijiaOverviewCardValue)
+              }
+            }
+            .width('100%')
+            .padding(HwSpace.lg)
+            .borderRadius(HwRadius.card)
+            .backgroundColor(MijiaOverviewCard)
+            .border({
+              width: this.selectedHomeId === ALL_HOMES_ID ? 1.5 : 1,
+              color: this.selectedHomeId === ALL_HOMES_ID ? MijiaOverviewCardValue : MijiaCardBorder
+            })
+            .shadow({ radius: 12, color: MijiaCardShadow, offsetY: 2 })
+            .stateStyles({ pressed: this.overviewCardPressedStyle })
+            .onClick(() => {
+              this.selectAllHomesFromSheet();
+            })
+
+            ForEach(this.homes, (home: XiaomiHome) => {
+              this.familyHomeRow(home, this.selectedHomeId === home.homeId)
+            }, (home: XiaomiHome) => home.homeId)
+          }
+          .width('100%')
+          .padding({ left: HwSpace.lg, right: HwSpace.lg, bottom: 24 })
+          .margin({ top: 12 })
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(MijiaSheetBackground)
+  }
+
+  @Builder
+  infoTabContent() {
+    Column({ space: 14 }) {
+      Blank().height(this.isWideScreen ? 12 : (this.isWearable ? this.topOffset() : 4))
+
+      if (this.infoLoading) {
+        Text('加载中…')
+          .fontFamily(this.appFontFamily('加载中…'))
+          .fontWeight(this.appFontWeight())
+          .fontSize(14)
+          .fontColor(this.textSecondaryColor())
+          .padding({ top: 24, bottom: 24 })
+      }
+      if (this.infoError.length > 0) {
+        Text(this.infoError)
+          .fontFamily(this.appFontFamily(this.infoError))
+          .fontWeight(this.appFontWeight())
+          .fontSize(14)
+          .fontColor(HwColor.danger)
+      }
+      if (!this.infoLoading && this.infoError.length === 0 && this.infoDeviceCount === 0) {
+        Text('当前家庭暂无可用设备数据')
+          .fontFamily(this.appFontFamily('当前家庭暂无可用设备数据'))
+          .fontWeight(this.appFontWeight())
+          .fontSize(14)
+          .fontColor(this.textSecondaryColor())
+      }
+
+      Column() {
+        this.infoMetricCard({
+          title: '温度',
+          rangeText: this.temperatureRangeText,
+          moreText: this.temperatureMoreText
+        })
+      }
+      .width('100%')
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.showTemperatureSheet = true;
+      })
+      .bindSheet($$this.showTemperatureSheet, this.temperatureDeviceSheet(), {
+        height: SheetSize.MEDIUM,
+        dragBar: true,
+            backgroundColor: MijiaSheetBackground,
+        showClose: false,
+      })
+
+      Column() {
+        this.infoMetricCard({
+          title: '湿度',
+          rangeText: this.humidityRangeText,
+          moreText: this.humidityMoreText
+        })
+      }
+      .width('100%')
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.showHumiditySheet = true;
+      })
+      .bindSheet($$this.showHumiditySheet, this.humidityDeviceSheet(), {
+        height: SheetSize.MEDIUM,
+        dragBar: true,
+            backgroundColor: MijiaSheetBackground,
+        showClose: false,
+      })
+
+      Column() {
+        this.infoMetricCard({
+          title: 'PM2.5',
+          rangeText: this.pm25RangeText,
+          moreText: this.pm25MoreText
+        })
+      }
+      .width('100%')
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.showPm25Sheet = true;
+      })
+      .bindSheet($$this.showPm25Sheet, this.pm25DeviceSheet(), {
+        height: SheetSize.MEDIUM,
+        dragBar: true,
+            backgroundColor: MijiaSheetBackground,
+        showClose: false,
+      })
+
+      Column() {
+        this.infoMetricCard({
+          title: '开启中',
+          rangeText: `${this.onDeviceCount} 台`,
+          moreText: ''
+        })
+      }
+      .width('100%')
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        this.showOnSheet = true;
+      })
+      .bindSheet($$this.showOnSheet, this.onDeviceSheet(), {
+        height: SheetSize.MEDIUM,
+        dragBar: true,
+            backgroundColor: MijiaSheetBackground,
+        showClose: false,
+      })
+
+      Blank()
+        .height(this.isWideScreen ? 24 : BOTTOM_BAR_HEIGHT + BOTTOM_BAR_MARGIN + this.navigationBarHeight + 24)
+    }
+    .width('100%')
+    .constraintSize({
+      maxWidth: this.isWideScreen ? MAX_CONTENT_WIDTH : '100%'
+    })
+    .padding({ left: 20, right: 20 })
+  }
+
+  @Builder
+  localSceneCard(scene: LocalScene) {
+    Row({ space: 12 }) {
+      SymbolGlyph($r('sys.symbol.house'))
+        .fontSize(20)
+        .fontColor([MijiaOverviewCardValue])
+      Column({ space: 4 }) {
+        Text(scene.name)
+          .fontFamily(this.appFontFamily(scene.name))
+          .fontWeight(this.appFontWeight())
+          .fontSize(15)
+          .fontColor(MijiaOverviewCardText)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.sceneTimerText(scene))
+          .fontFamily(this.appFontFamily(this.sceneTimerText(scene)))
+          .fontWeight(this.appFontWeight())
+          .fontSize(12)
+          .fontColor(MijiaOverviewCardText)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      IconCircleButton({
+        symbol: $r('sys.symbol.trash'),
+        buttonSize: 32,
+        iconSize: 16,
+        tint: MijiaOverviewCardText,
+        onAction: () => {
+          this.confirmDeleteLocalScene(scene);
+        }
+      })
+      Row({ space: 4 }) {
+        Text('执行')
+          .fontFamily(this.appFontFamily('执行'))
+          .fontWeight(this.appFontWeight())
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#0E1B28')
+      }
+      .height(30)
+      .padding({ left: 16, right: 16 })
+      .borderRadius(15)
+      .backgroundColor(MijiaOverviewCardValue)
+      .alignItems(VerticalAlign.Center)
+      .justifyContent(FlexAlign.Center)
+      .onClick(() => {
+        this.execLocalScene(scene);
+      })
+    }
+    .width('100%')
+    .padding(HwSpace.lg)
+    .borderRadius(HwRadius.card)
+    .backgroundColor(MijiaOverviewCard)
+    .border({ width: 1, color: MijiaCardBorder })
+    .shadow({ radius: 12, color: MijiaCardShadow, offsetY: 2 })
+    .clip(true)
+    .stateStyles({ pressed: this.overviewCardPressedStyle })
+    .transition(TransitionEffect.OPACITY.animation({ duration: 240, curve: Curve.EaseOut })
+      .combine(TransitionEffect.translate({ y: 12 })))
+  }
+
+  @Builder
+  sceneCard(scene: XiaomiScene) {
+    Row({ space: 12 }) {
+      SymbolGlyph($r('sys.symbol.bolt'))
+        .fontSize(20)
+        .fontColor([MijiaOverviewCardValue])
+      Column({ space: 4 }) {
+        Text(scene.name)
+          .fontFamily(this.appFontFamily(scene.name))
+          .fontWeight(this.appFontWeight())
+          .fontSize(15)
+          .fontColor(MijiaOverviewCardText)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.sceneTypeLabel(scene))
+          .fontFamily(this.appFontFamily(this.sceneTypeLabel(scene)))
+          .fontWeight(this.appFontWeight())
+          .fontSize(12)
+          .fontColor(MijiaOverviewCardText)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Row({ space: 4 }) {
+        Text('执行')
+          .fontFamily(this.appFontFamily('执行'))
+          .fontWeight(this.appFontWeight())
+          .fontSize(13)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#0E1B28')
+      }
+      .height(30)
+      .padding({ left: 16, right: 16 })
+      .borderRadius(15)
+      .backgroundColor(MijiaOverviewCardValue)
+      .alignItems(VerticalAlign.Center)
+      .justifyContent(FlexAlign.Center)
+    }
+    .width('100%')
+    .padding(HwSpace.lg)
+    .borderRadius(HwRadius.card)
+    .backgroundColor(MijiaOverviewCard)
+    .border({ width: 1, color: MijiaCardBorder })
+    .shadow({ radius: 12, color: MijiaCardShadow, offsetY: 2 })
+    .clip(true)
+    .stateStyles({ pressed: this.overviewCardPressedStyle })
+    .transition(TransitionEffect.OPACITY.animation({ duration: 240, curve: Curve.EaseOut })
+      .combine(TransitionEffect.translate({ y: 12 })))
+    .onClick(() => {
+      this.runSceneById(scene);
+    })
+  }
+
+  @Builder
+  cloudMessageCard(msg: MijiaMessageItem) {
+    Row({ space: 12 }) {
+      SymbolGlyph($r('sys.symbol.envelope'))
+        .fontSize(20)
+        .fontColor([this.isMessageUnread(msg.messageId) ? HwColor.primary : MijiaOverviewCardText])
+      Column({ space: 4 }) {
+        Row({ space: 8 }) {
+          Text(msg.title)
+            .fontFamily(this.appFontFamily(msg.title))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(MijiaOverviewCardText)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Blank()
+          if (this.isMessageUnread(msg.messageId)) {
+            Circle()
+              .width(8)
+              .height(8)
+              .fill(HwColor.primary)
+          }
+          Text(this.formatCloudMessageTime(msg.time))
+            .fontFamily(this.appFontFamily(this.formatCloudMessageTime(msg.time)))
+            .fontWeight(this.appFontWeight())
+            .fontSize(11)
+            .fontColor(MijiaOverviewCardText)
+            .maxLines(1)
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+        if (msg.desc.length > 0) {
+          Text(msg.desc)
+            .fontFamily(this.appFontFamily(msg.desc))
+            .fontWeight(this.appFontWeight())
+            .fontSize(12)
+            .fontColor(MijiaOverviewCardText)
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+    }
+    .width('100%')
+    .padding(HwSpace.lg)
+    .borderRadius(HwRadius.card)
+    .backgroundColor(MijiaOverviewCard)
+    .border({ width: 1, color: MijiaCardBorder })
+    .shadow({ radius: 12, color: MijiaCardShadow, offsetY: 2 })
+    .clip(true)
+    .alignItems(VerticalAlign.Top)
+    .onClick(() => {
+      Haptic.soft();
+      this.markMessageRead(msg.messageId);
+      const target = this.allVisibleDevices.find((device: XiaomiDevice): boolean => device.did === msg.did);
+      if (msg.did.length > 0 && target !== undefined && !this.isRouterDevice(target)) {
+        this.pageInfos.pushPathByName('deviceDetail', new DeviceDetailRouteParam(msg.did));
+      }
+    })
+    .transition(TransitionEffect.OPACITY.animation({ duration: 240, curve: Curve.EaseOut })
+      .combine(TransitionEffect.translate({ y: 12 })))
+  }
+
+  @Builder
+  alertCard(alert: AlertItem) {
+    Row({ space: 12 }) {
+      SymbolGlyph(alert.level === 'warn'
+        ? $r('sys.symbol.exclamationmark_triangle_fill') : $r('sys.symbol.info_circle'))
+        .fontSize(20)
+        .fontColor([alert.level === 'warn' ? '#FFB340' : MijiaOverviewCardText])
+      Column({ space: 4 }) {
+        Row({ space: 8 }) {
+          Text(alert.title)
+            .fontFamily(this.appFontFamily(alert.title))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(MijiaOverviewCardText)
+          if (alert.roomName.length > 0) {
+            Text(alert.roomName)
+              .fontFamily(this.appFontFamily(alert.roomName))
+              .fontWeight(this.appFontWeight())
+              .fontSize(12)
+              .fontColor(MijiaOverviewCardText)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+        Text(alert.detail)
+          .fontFamily(this.appFontFamily(alert.detail))
+          .fontWeight(this.appFontWeight())
+          .fontSize(12)
+          .fontColor(MijiaOverviewCardText)
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+    }
+    .width('100%')
+    .padding(HwSpace.lg)
+    .borderRadius(HwRadius.card)
+    .backgroundColor(MijiaOverviewCard)
+    .border({ width: 1, color: MijiaCardBorder })
+    .shadow({ radius: 12, color: MijiaCardShadow, offsetY: 2 })
+    .clip(true)
+    .stateStyles({ pressed: this.overviewCardPressedStyle })
+    .transition(TransitionEffect.OPACITY.animation({ duration: 240, curve: Curve.EaseOut })
+      .combine(TransitionEffect.translate({ y: 12 })))
+    .onClick(() => {
+      if (alert.type !== 'offline') {
+        this.openDeviceFromSheet(alert.did);
+      }
+    })
+  }
+
+  @Builder
+  categoryChip(key: string, label: string) {
+    Row({ space: 5 }) {
+      Text(label)
+        .fontFamily(this.appFontFamily(label))
+        .fontWeight(this.appFontWeight())
+        .fontSize(14)
+        .fontColor(this.sceneCategory === key ? HwColor.primary : (this.isDarkMode ? Color.White : this.textPrimaryColor()))
+        .maxLines(1)
+      Text(String(this.categoryCount(key)))
+        .fontFamily(this.appFontFamily(String(this.categoryCount(key))))
+        .fontWeight(this.appFontWeight())
+        .fontSize(11)
+        .fontColor(this.sceneCategory === key ? HwColor.primary : (this.isDarkMode ? Color.White : this.textPrimaryColor()))
+        .opacity(0.75)
+        .maxLines(1)
+    }
+    .height(32)
+    .padding({ left: 14, right: 14 })
+    .borderRadius(16)
+    .backgroundColor(this.sceneCategory === key ? Color.White : (this.isDarkMode ? '#66FFFFFF' : '#F2F8F8'))
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => {
+      this.sceneCategory = key;
+    })
+  }
+
+  @Builder
+  smartTabContent() {
+    Column({ space: 12 }) {
+      Blank().height(this.isWideScreen ? 12 : (this.isWearable ? this.topOffset() : 4))
+
+      Row({ space: 12 }) {
+        SymbolGlyph($r('sys.symbol.plus'))
+          .fontSize(18)
+          .fontColor([MijiaOverviewCardValue])
+        Text('创建智能')
+          .fontFamily(this.appFontFamily('创建智能'))
+          .fontWeight(this.appFontWeight())
+          .fontSize(15)
+          .fontColor(MijiaOverviewCardText)
+          .layoutWeight(1)
+        SymbolGlyph($r('sys.symbol.chevron_right'))
+          .fontSize(16)
+          .fontColor([MijiaOverviewCardText])
+      }
+      .width('100%')
+      .padding(HwSpace.lg)
+      .borderRadius(HwRadius.card)
+      .backgroundColor(MijiaOverviewCard)
+      .border({ width: 1, color: MijiaCardBorder })
+      .clip(true)
+      .stateStyles({ pressed: this.overviewCardPressedStyle })
+      .onClick(() => {
+        this.openSceneCreatePage();
+      })
+
+      Row({ space: 12 }) {
+        SymbolGlyph($r('sys.symbol.moon_fill'))
+          .fontSize(18)
+          .fontColor([MijiaOverviewCardValue])
+        Column({ space: 2 }) {
+          Text(this.lightsOffing ? '正在关灯…' : '一键关灯')
+            .fontFamily(this.appFontFamily(this.lightsOffing ? '正在关灯…' : '一键关灯'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontColor(MijiaOverviewCardText)
+          Text('关闭当前家庭所有在线灯光设备')
+            .fontFamily(this.appFontFamily('关闭当前家庭所有在线灯光设备'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(12)
+            .fontColor(MijiaOverviewCardText)
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+        SymbolGlyph($r('sys.symbol.chevron_right'))
+          .fontSize(16)
+          .fontColor([MijiaOverviewCardText])
+      }
+      .width('100%')
+      .padding(HwSpace.lg)
+      .borderRadius(HwRadius.card)
+      .backgroundColor(MijiaOverviewCard)
+      .border({ width: 1, color: MijiaCardBorder })
+      .clip(true)
+      .stateStyles({ pressed: this.overviewCardPressedStyle })
+      .onClick(() => {
+        this.confirmLightsOff();
+      })
+
+      Row({ space: 8 }) {
+        this.categoryChip('auto', '自动化')
+        this.categoryChip('manual', '手动')
+        this.categoryChip('local', '本地')
+      }
+      .width('100%')
+      .padding({ left: 4, right: 4 })
+
+      if (this.sceneCategory === 'local') {
+        if (this.localScenes.length > 0) {
+          Text(`我的智能（${this.localScenes.length}）`)
+            .fontFamily(this.appFontFamily(`我的智能（${this.localScenes.length}）`))
+            .fontWeight(this.appFontWeight())
+            .fontSize(13)
+            .fontColor(MijiaOverviewCardText)
+            .width('100%')
+            .padding({ left: 4, right: 4 })
+          ForEach(this.localScenes, (scene: LocalScene) => {
+            this.localSceneCard(scene)
+          }, (scene: LocalScene) => scene.sceneId)
+        } else {
+          Column({ space: 8 }) {
+            SymbolGlyph($r('sys.symbol.plus'))
+              .fontSize(30)
+              .fontColor([this.textSecondaryColor()])
+            Text('还没有本地智能')
+              .fontFamily(this.appFontFamily('还没有本地智能'))
+              .fontWeight(this.appFontWeight())
+              .fontSize(15)
+              .fontColor(this.textPrimaryColor())
+            Text('点击上方「创建智能」新建定时或批量动作')
+              .fontFamily(this.appFontFamily('点击上方「创建智能」新建定时或批量动作'))
+              .fontWeight(this.appFontWeight())
+              .fontSize(12)
+              .fontColor(this.textSecondaryColor())
+          }
+          .width('100%')
+          .padding({ top: 40, bottom: 40 })
+        }
+      } else {
+        // 下拉刷新时 Refresh 头部已展示「正在刷新…」，仅在首次加载（尚无数据）时显示加载胶囊。
+        if (this.scenesLoading && this.scenes.length === 0) {
+          Row() {
+            Row({ space: 6 }) {
+              LoadingProgress()
+                .width(14)
+                .height(14)
+                .color(this.textSecondaryColor())
+              Text('加载中…')
+                .fontFamily(this.appFontFamily('加载中…'))
+                .fontWeight(this.appFontWeight())
+                .fontSize(12)
+                .fontColor(this.textSecondaryColor())
+            }
+            .alignItems(VerticalAlign.Center)
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .borderRadius(16)
+            .backgroundColor(this.isDarkMode ? '#66FFFFFF' : '#FFFFFF')
+          }
+          .justifyContent(FlexAlign.Center)
+          .width('100%')
+          .padding({ top: 48 })
+          .position({ x: 0, y: 0 })
+          .hitTestBehavior(HitTestMode.None)
+        }
+        if (this.scenesError.length > 0) {
+          Text(this.scenesError)
+            .fontFamily(this.appFontFamily(this.scenesError))
+            .fontWeight(this.appFontWeight())
+            .fontSize(14)
+            .fontColor(HwColor.danger)
+        }
+        ForEach(this.scenesForCategory(this.sceneCategory), (scene: XiaomiScene) => {
+          this.sceneCard(scene)
+        }, (scene: XiaomiScene) => scene.sceneId)
+        if (!this.scenesLoading && this.scenesError.length === 0 &&
+          this.scenesForCategory(this.sceneCategory).length === 0) {
+          Column({ space: 8 }) {
+            SymbolGlyph($r('sys.symbol.bolt'))
+              .fontSize(30)
+              .fontColor([this.textSecondaryColor()])
+            Text(this.sceneCategory === 'auto' ? '暂无自动化' : '暂无手动场景')
+              .fontFamily(this.appFontFamily(this.sceneCategory === 'auto' ? '暂无自动化' : '暂无手动场景'))
+              .fontWeight(this.appFontWeight())
+              .fontSize(15)
+              .fontColor(this.textPrimaryColor())
+            Text('前往米家App创建后，这里会同步显示')
+              .fontFamily(this.appFontFamily('前往米家App创建后，这里会同步显示'))
+              .fontWeight(this.appFontWeight())
+              .fontSize(12)
+              .fontColor(this.textSecondaryColor())
+          }
+          .width('100%')
+          .padding({ top: 40, bottom: 40 })
+        }
+      }
+
+      Blank()
+        .height(this.isWideScreen ? 24 : BOTTOM_BAR_HEIGHT + BOTTOM_BAR_MARGIN + this.navigationBarHeight + 24)
+    }
+    .width('100%')
+    .constraintSize({
+      maxWidth: this.isWideScreen ? MAX_CONTENT_WIDTH : '100%'
+    })
+    .padding({ left: this.contentPadding(), right: this.contentPadding() })
+  }
+
+  @Builder
+  alertTabContent() {
+    Column({ space: 12 }) {
+      Blank().height(this.isWideScreen ? 12 : (this.isWearable ? this.topOffset() : 4))
+
+      if (this.alertsLoading && this.alerts.length === 0 && this.cloudMessages.length === 0) {
+        Row() {
+          Row({ space: 6 }) {
+            LoadingProgress()
+              .width(14)
+              .height(14)
+              .color(this.textSecondaryColor())
+            Text('加载中…')
+              .fontFamily(this.appFontFamily('加载中…'))
+              .fontWeight(this.appFontWeight())
+              .fontSize(12)
+              .fontColor(this.textSecondaryColor())
+          }
+          .alignItems(VerticalAlign.Center)
+          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+          .borderRadius(16)
+          .backgroundColor(this.isDarkMode ? '#66FFFFFF' : '#FFFFFF')
+        }
+        .justifyContent(FlexAlign.Center)
+        .width('100%')
+        .padding({ top: 48 })
+        .position({ x: 0, y: 0 })
+        .hitTestBehavior(HitTestMode.None)
+      }
+      if (!this.alertsLoading && !this.cloudMessageLoading
+        && this.alerts.length === 0 && this.cloudMessages.length === 0) {
+        Column({ space: 8 }) {
+          SymbolGlyph($r('sys.symbol.bell'))
+            .fontSize(30)
+            .fontColor([this.textSecondaryColor()])
+          Text('暂无提醒')
+            .fontFamily(this.appFontFamily('暂无提醒'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontColor(this.textPrimaryColor())
+          Text('设备通知、耗材不足、低电量、设备离线等消息会显示在这里')
+            .fontFamily(this.appFontFamily('设备通知、耗材不足、低电量、设备离线等消息会显示在这里'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(12)
+            .fontColor(this.textSecondaryColor())
+        }
+        .width('100%')
+        .padding({ top: 40, bottom: 40 })
+      }
+
+      if (this.cloudMessages.length > 0) {
+        Row({ space: 8 }) {
+          SymbolGlyph($r('sys.symbol.envelope'))
+            .fontSize(16)
+            .fontColor([this.textPrimaryColor()])
+          Text('云端消息')
+            .fontFamily(this.appFontFamily('云端消息'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.textPrimaryColor())
+          Blank()
+          if (this.unreadMessageIds.length > 0) {
+            Text(`${this.unreadMessageIds.length} 条未读`)
+              .fontFamily(this.appFontFamily(`${this.unreadMessageIds.length} 条未读`))
+              .fontWeight(this.appFontWeight())
+              .fontSize(12)
+              .fontColor(HwColor.primary)
+            Text('全部已读')
+              .fontFamily(this.appFontFamily('全部已读'))
+              .fontWeight(this.appFontWeight())
+              .fontSize(12)
+              .fontColor(HwColor.primary)
+              .onClick(() => {
+                Haptic.soft();
+                this.markAllMessagesRead();
+              })
+          } else {
+            Text(`${this.cloudMessages.length} 条`)
+              .fontFamily(this.appFontFamily(`${this.cloudMessages.length} 条`))
+              .fontWeight(this.appFontWeight())
+              .fontSize(12)
+              .fontColor(this.textSecondaryColor())
+          }
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+        .padding({ top: 4 })
+
+        ForEach(this.cloudMessages, (msg: MijiaMessageItem) => {
+          this.cloudMessageCard(msg)
+        }, (msg: MijiaMessageItem) => `${msg.messageId}_${msg.time}`)
+      }
+
+      if (this.alerts.length > 0) {
+        Row({ space: 8 }) {
+          SymbolGlyph($r('sys.symbol.bell_fill'))
+            .fontSize(16)
+            .fontColor([this.textPrimaryColor()])
+          Text('设备提醒')
+            .fontFamily(this.appFontFamily('设备提醒'))
+            .fontWeight(this.appFontWeight())
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.textPrimaryColor())
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+        .padding({ top: 4 })
+      }
+
+      ForEach(this.alerts, (alert: AlertItem) => {
+        this.alertCard(alert)
+      }, (alert: AlertItem) => `${alert.type}_${alert.did}`)
+
+      Blank()
+        .height(this.isWideScreen ? 24 : BOTTOM_BAR_HEIGHT + BOTTOM_BAR_MARGIN + this.navigationBarHeight + 24)
+    }
+    .width('100%')
+    .constraintSize({
+      maxWidth: this.isWideScreen ? MAX_CONTENT_WIDTH : '100%'
+    })
+    .padding({ left: this.contentPadding(), right: this.contentPadding() })
+  }
+
+  @Builder
+  homeRefreshHeader() {
+    Row({ space: 6 }) {
+      if (this.homeRefreshing) {
+        LoadingProgress()
+          .width(20)
+          .height(20)
+          .color(HwColor.primary)
+      }
+      Text(this.homeRefreshText)
+        .fontSize(13)
+        .fontColor(this.textSecondaryColor())
+    }
+    .width('100%')
+    .height(44)
+    .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
+  smartRefreshHeader() {
+    Row({ space: 6 }) {
+      if (this.smartRefreshing) {
+        LoadingProgress()
+          .width(20)
+          .height(20)
+          .color(HwColor.primary)
+      }
+      Text(this.smartRefreshText)
+        .fontSize(13)
+        .fontColor(this.textSecondaryColor())
+    }
+    .width('100%')
+    .height(44)
+    .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
+  alertRefreshHeader() {
+    Row({ space: 6 }) {
+      if (this.alertRefreshing) {
+        LoadingProgress()
+          .width(20)
+          .height(20)
+          .color(HwColor.primary)
+      }
+      Text(this.alertRefreshText)
+        .fontSize(13)
+        .fontColor(this.textSecondaryColor())
+    }
+    .width('100%')
+    .height(44)
+    .justifyContent(FlexAlign.Center)
+  }
+
+  @Builder
+  homePane() {
+    Stack({ alignContent: Alignment.Top }) {
+      Column() {
+        if (!this.isWearable) {
+          if (this.isWideScreen) {
+            Blank().height(56 + this.statusBarHeight)
+          } else {
+            Blank().height(this.statusBarHeight + 96)
+          }
+        }
+        Refresh({ refreshing: $$this.homeRefreshing, offset: 48, builder: this.homeRefreshHeader() }) {
+          Scroll(this.homeScroller) {
+            Column() {
+              this.homeTabContent()
+            }
+            .width('100%')
+          }
+          .width('100%')
+          .height('100%')
+          .align(this.cardsFromTop ? Alignment.Top : Alignment.Center)
+          .scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.Spring)
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .onRefreshing(() => {
+          this.handleHomePullRefresh();
+        })
+        .onStateChange((state: RefreshStatus) => {
+          this.homeRefreshText = this.refreshStateText(state);
+        })
+      }
+      .width('100%')
+      .height('100%')
+      if (!this.isWearable) {
+        if (this.isWideScreen) {
+          this.tabHeader()
+        } else {
+          this.homeHeader()
+        }
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .layoutWeight(this.isWearable ? 1 : 0)
+  }
+
+  @Builder
+  smartPane() {
+    Stack({ alignContent: Alignment.Top }) {
+      Column() {
+        if (!this.isWearable) {
+          Blank().height(56 + this.statusBarHeight)
+        }
+        Refresh({ refreshing: $$this.smartRefreshing, offset: 48, builder: this.smartRefreshHeader() }) {
+          Scroll(this.smartScroller) {
+            Column() {
+              this.smartTabContent()
+            }
+            .width('100%')
+          }
+          .width('100%')
+          .height('100%')
+          .align(this.cardsFromTop ? Alignment.Top : Alignment.Center)
+          .scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.Spring)
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .onRefreshing(() => {
+          this.handleSmartPullRefresh();
+        })
+        .onStateChange((state: RefreshStatus) => {
+          this.smartRefreshText = this.refreshStateText(state);
+        })
+      }
+      .width('100%')
+      .height('100%')
+      if (!this.isWearable) {
+        this.tabHeader()
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .layoutWeight(this.isWearable ? 1 : 0)
+  }
+
+  @Builder
+  alertPane() {
+    Stack({ alignContent: Alignment.Top }) {
+      Column() {
+        if (!this.isWearable) {
+          Blank().height(56 + this.statusBarHeight)
+        }
+        Refresh({ refreshing: $$this.alertRefreshing, offset: 48, builder: this.alertRefreshHeader() }) {
+          Scroll(this.alertScroller) {
+            Column() {
+              this.alertTabContent()
+            }
+            .width('100%')
+          }
+          .width('100%')
+          .height('100%')
+          .align(this.cardsFromTop ? Alignment.Top : Alignment.Center)
+          .scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.Spring)
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .onRefreshing(() => {
+          this.handleAlertPullRefresh();
+        })
+        .onStateChange((state: RefreshStatus) => {
+          this.alertRefreshText = this.refreshStateText(state);
+        })
+      }
+      .width('100%')
+      .height('100%')
+      if (!this.isWearable) {
+        this.tabHeader()
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .layoutWeight(this.isWearable ? 1 : 0)
+  }
+
+  @Builder
+  minePane() {
+    Stack({ alignContent: Alignment.Top }) {
+      Scroll(this.mineScroller) {
+        Column() {
+          if (!this.isWearable) {
+            Blank().height(56 + this.statusBarHeight)
+          }
+          this.mineTabContent()
+        }
+        .width('100%')
+      }
+      .width('100%')
+      .height('100%')
+      .align(this.cardsFromTop ? Alignment.Top : Alignment.Center)
+      .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring)
+      if (!this.isWearable) {
+        this.tabHeader()
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .layoutWeight(this.isWearable ? 1 : 0)
+  }
+
+  @Builder
+  wearableTabButton(index: number) {
+    Column({ space: 3 }) {
+      this.tabIcon(index)
+      Text(this.tabLabel(index))
+        .fontFamily(this.appFontFamily(this.tabLabel(index)))
+        .fontWeight(this.appFontWeight())
+        .fontSize(11)
+        .fontColor(this.activeTab === index ? HwColor.primary : this.textSecondaryColor())
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .layoutWeight(1)
+    .height(52)
+    .justifyContent(FlexAlign.Center)
+    .onClick(() => {
+      this.onTabSelected(index);
+    })
+  }
+
+  @Builder
+  wearableContent() {
+    Column() {
+      if (this.activeTab === 0) {
+        this.homePane()
+      } else {
+        this.minePane()
+      }
+      Row() {
+        this.wearableTabButton(0)
+        this.wearableTabButton(1)
+      }
+      .width('100%')
+      .height(56)
+      .padding({ left: 8, right: 8, bottom: this.navigationBarHeight })
+      .backgroundColor('#CCFFFFFF')
+    }
+    .width('100%')
+    .height('100%')
+    .layoutWeight(this.isWearable ? 1 : 0)
+  }
+
+  /** 首页刷新：设备列表 + 概览卡（温湿度/PM2.5）一起刷新 */
+  private refreshHomeData(silent: boolean = false): void {
+    this.loadData(true, silent).then(() => {
+      this.loadInfoData(true);
+      if (!silent) {
+        this.getUIContext().getPromptAction().showToast({ message: '已刷新' });
+      }
+    }).catch((err: Error) => {
+      Logger.error('refresh home data failed, %{public}s', err.message);
+      if (!silent) {
+        this.getUIContext().getPromptAction().showToast({ message: '刷新失败' });
+      }
+    });
+  }
+
+  private refreshStateText(state: RefreshStatus): string {
+    if (state === RefreshStatus.OverDrag) {
+      return '释放立即刷新';
+    }
+    if (state === RefreshStatus.Refresh) {
+      return '正在刷新…';
+    }
+    if (state === RefreshStatus.Done) {
+      return '刷新完成';
+    }
+    return '下拉刷新';
+  }
+
+  private handleHomePullRefresh(): void {
+    this.homeRefreshing = true;
+    this.loadData(true, true)
+      .then(() => this.loadInfoData(true))
+      .catch(() => {
+      })
+      .finally(() => {
+        this.homeRefreshing = false;
+      });
+  }
+
+  private handleSmartPullRefresh(): void {
+    this.smartRefreshing = true;
+    this.loadScenes(true).finally(() => {
+      this.smartRefreshing = false;
+    });
+  }
+
+  private handleAlertPullRefresh(): void {
+    this.alertRefreshing = true;
+    this.buildAlerts();
+    this.refreshCloudMessages().finally(() => {
+      this.alertRefreshing = false;
+    });
+  }
+
+  private onTabSelected(index: number): void {
+    FeedbackLogService.recordOperation('UI', `切换标签 ${index}`);
+    this.activeTab = index;
+    if (this.isWearable) {
+      if (index === 1) {
+        this.loadData(true, true);
+        this.loadAccount();
+      }
+      return;
+    }
+    if (index === 0) {
+      this.refreshInfoOnEnter();
+      this.startInfoRefreshTimer();
+    } else {
+      this.stopInfoRefreshTimer();
+    }
+    if (index === 1) {
+      this.loadScenes(false);
+    } else if (index === 2) {
+      this.buildAlerts();
+      this.refreshCloudMessages();
+    } else if (index === 3) {
+      this.loadData(true, true);
+      this.loadAccount();
+    }
+  }
+
+  build() {
+    Column() {
+      HdsNavigation(this.pageInfos) {
+      Stack({ alignContent: Alignment.TopStart }) {
+        AppBackground()
+
+        if (this.showFamilySheet) {
+          this.familySelectOverlay()
+        }
+
+        if (this.isWideScreen) {
+          HdsTabs({
+            controller: this.tabsController,
+            index: this.activeTab
+          }) {
+            TabContent() { this.homePane() }.tabBar(this.tabItem(0))
+            TabContent() { this.smartPane() }.tabBar(this.tabItem(1))
+            TabContent() { this.alertPane() }.tabBar(this.tabItem(2))
+            TabContent() { this.minePane() }.tabBar(this.tabItem(3))
+          }
+          .width('100%')
+          .height('100%')
+          .barPosition(BarPosition.Start)
+          .vertical(true)
+          .barWidth(this.sideBarWidth)
+          .barHeight('100%')
+          .barOverlap(false)
+          .scrollable(false)
+          .animationDuration(this.homeSmoothSwitch ? 300 : 0)
+          .onSelected((index: number) => {
+            this.onTabSelected(index);
+          })
+
+          Stack({ alignContent: Alignment.Center }) {
+            Column()
+              .width(1)
+              .height('100%')
+              .backgroundColor('#F2F8F8')
+          }
+          .width(12)
+          .height('100%')
+          .position({ x: this.sideBarWidth - 6, y: 0 })
+          .backgroundColor(this.dragHovered ? '#0A000000' : Color.Transparent)
+          .onHover((isHover: boolean) => {
+            this.dragHovered = isHover;
+          })
+          .gesture(
+            PanGesture({ fingers: 1, direction: PanDirection.Horizontal })
+              .onActionStart(() => {
+                this.dragStartWidth = this.sideBarWidth;
+              })
+              .onActionUpdate((event: GestureEvent) => {
+                const maxWidth: number = Math.min(this.screenWidthVp * 0.4, SIDE_BAR_WIDTH_MAX);
+                this.sideBarWidth = Math.max(SIDE_BAR_WIDTH_MIN,
+                  Math.min(this.dragStartWidth + event.offsetX, maxWidth));
+              })
+          )
+        } else if (this.isWearable) {
+          this.wearableContent()
+        } else {
+          HdsTabs({
+            controller: this.tabsController,
+            index: this.activeTab
+          }) {
+            TabContent() { this.homePane() }.tabBar(this.tabBarStyle(0))
+            TabContent() { this.smartPane() }.tabBar(this.tabBarStyle(1))
+            TabContent() { this.alertPane() }.tabBar(this.tabBarStyle(2))
+            TabContent() { this.minePane() }.tabBar(this.tabBarStyle(3))
+          }
+          .width('100%')
+          .height('100%')
+          .barPosition(BarPosition.End)
+          .vertical(false)
+          .barOverlap(true)
+          .scrollable(false)
+          .animationDuration(this.homeSmoothSwitch ? 300 : 0)
+          .onSelected((index: number) => {
+            this.onTabSelected(index);
+          })
+          .barFloatingStyle({
+            barBottomMargin: this.navigationBarHeight,
+            barSideMargin: 0,
+            gradientMask: {
+              maskColor: '#00000000',
+              maskHeight: 0
+            },
+            lightColor: Color.White,
+            systemMaterialEffect: {
+              materialType: hdsMaterial.MaterialType.IMMERSIVE,
+              materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE
+            }
+          })
+        }
+      }
+      .width('100%')
+      .height('100%')
+      .backgroundColor(Color.Transparent)
+      .clip(this.isWearable)
+      .borderRadius(this.isWearable ? '50%' : 0)
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.isDarkMode ? HwColor.backgroundDark : HwColor.background)
+    .mode(this.isLargeScreen && !this.pcLayoutEnabled && this.autoMultiColumn ? NavigationMode.Auto : NavigationMode.Stack)
+    .titleBar({
+      avoidLayoutSafeArea: true,
+      style: {
+        scrollEffectOpts: {
+          enableScrollEffect: true,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
+        }
+      },
+      content: {
+        title: {
+          mainTitle: this.pageTitle(),
+          subTitle: this.activeTab === 1 && this.selectedHomeName.length > 0
+            ? this.selectedHomeName
+            : undefined
+        },
+        menu: this.activeTab === 0 ? {
+          value: [
+            {
+              content: {
+                label: '选择家庭',
+                icon: $r('sys.symbol.house'),
+                isEnabled: true,
+                action: () => {
+                  FeedbackLogService.recordOperation('UI', '打开选择家庭');
+                  this.showFamilySheet = true;
+                }
+              }
+            }
+          ]
+        } : undefined
+      }
+    })
+    .titleMode(HdsNavigationTitleMode.FREE)
+    .hideTitleBar(true)
+    .hideBackButton(true)
+    .hideToolBar(true, true)
+    .bindToScrollable([this.homeScroller, this.mineScroller, this.infoScroller])
+    .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    .keyboardShortcut('R', [ModifierKey.CTRL], () => {
+      FeedbackLogService.recordOperation('KEYBOARD', 'Ctrl+R 刷新当前页');
+      this.refreshCurrentTab();
+    })
+    .keyboardShortcut(FunctionKey.ESC, [], () => {
+      if (this.pageInfos.size() > 0) {
+        this.pageInfos.pop();
+      }
+    })
+  }
+  .width('100%')
+  .height('100%')
+  .bindSheet($$this.showCardSheet, this.cardConfigSheet(), {
+      height: SheetSize.MEDIUM,
+      dragBar: true,
+      backgroundColor: MijiaSheetBackground,
+      showClose: false
+    })
+  }
+}
