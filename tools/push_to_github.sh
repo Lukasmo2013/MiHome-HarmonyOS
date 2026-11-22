@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 # 一键把本仓库推送到 GitHub。
 #
-# 用法（token 只从环境变量读取，不写入文件、不进 git 历史）：
+# 用法（token 与账号均只从环境变量读取，不写入文件、不进 git 历史）：
 #   export GITHUB_TOKEN=ghp_xxxxxxxx
+#   export GITHUB_OWNER=your-github-login
 #   bash tools/push_to_github.sh
 #
-# 可选环境变量：
-#   GITHUB_OWNER     默认 Lukasmo2013
+# 环境变量：
+#   GITHUB_TOKEN     必填，PAT
+#   GITHUB_OWNER     必填，GitHub 用户名（不是邮箱）
 #   GITHUB_REPO      默认 MiHome-HarmonyOS
 #   GITHUB_PRIVATE   默认 true（私有仓库；填 false 则公开）
 #   GITHUB_SKIP_CREATE  设为 1 时跳过 API 建仓（仓库已在网页手动创建时用）
 #
-# 说明：fine-grained token 无法通过 API 创建仓库（403），
-#      此时请在网页手动新建空仓库，再用 GITHUB_SKIP_CREATE=1 运行本脚本。
+# 说明：fine-grained token 建仓需要 Administration: Read and write + All repositories；
+#      若返回 403，请在网页手动新建空仓库，再用 GITHUB_SKIP_CREATE=1 运行本脚本。
 set -euo pipefail
 
 : "${GITHUB_TOKEN:?请先 export GITHUB_TOKEN=github_pat_xxx（不要写进命令行历史）}"
-OWNER="${GITHUB_OWNER:-Lukasmo2013}"
+: "${GITHUB_OWNER:?请先 export GITHUB_OWNER=<你的 GitHub 用户名>}"
+OWNER="${GITHUB_OWNER}"
 REPO="${GITHUB_REPO:-MiHome-HarmonyOS}"
 PRIVATE="${GITHUB_PRIVATE:-true}"
 SKIP_CREATE="${GITHUB_SKIP_CREATE:-0}"
