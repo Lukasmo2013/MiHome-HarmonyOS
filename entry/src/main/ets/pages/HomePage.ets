@@ -66,6 +66,8 @@ import { MessageReadStore } from '../storage/MessageReadStore';
 import { Haptic } from '../utils/Haptic';
 import { asBool, boolWriteValue } from '../utils/BoolValue';
 import { CardFormService } from '../services/CardFormService';
+import { CardConfigStore } from '../storage/CardConfigStore';
+import { CARD_CONTENT_OPTIONS, CARD_DIMENSIONS, CardContentOption } from '../models/CardConfigModels';
 
 const TITLE_BAR_HEIGHT_FREE: number = 137;
 const CONTENT_TOP_OFFSET: number = 137;
@@ -78,20 +80,7 @@ const SIDE_BAR_WIDTH_MAX: number = 320;
 const MAX_CONTENT_WIDTH: number = 1080;
 const ROOM_ALL_KEY: string = '__all_rooms__';
 const ROOM_UNROOMED_KEY: string = '__unroomed__';
-const CARD_DIMENSIONS: string[] = ['1*2', '2*2', '2*4', '4*4'];
-
-interface CardContentOption {
-  key: string;
-  label: string;
-}
-const CARD_CONTENT_OPTIONS: CardContentOption[] = [
-  { key: 'power', label: '开关状态' },
-  { key: 'online', label: '在线状态' },
-  { key: 'name', label: '设备名称' },
-  { key: 'location', label: '所在房间' },
-  { key: 'model', label: '设备型号' },
-  { key: 'custom', label: '自定义文字' }
-];
+/* 卡片配置项集中在 models/CardConfigModels，首页与卡片管理中心共用 */
 
 interface RoomCandidate {
   key: string;
@@ -289,6 +278,8 @@ struct HomePage {
   @State cardContent: string = 'power';
   @State cardCustomText: string = '';
   @State cardTitle: string = '';
+  /** 「我的」页桌面卡片入口副标题 */
+  @State cardEntryText: string = '选择家电放到桌面，随时查看与开关';
   private pendingDeviceDid: string = '';
   private infoRefreshTimer: number = -1;
   private lastInfoRefreshAt: number = 0;
@@ -358,6 +349,7 @@ struct HomePage {
     this.checkDueTimers();
     this.startTimerTicker();
     this.startQuickPoll();
+    this.refreshCardEntrySummary();
     // 冷启动经通知点入：等待首页与导航栈就绪后消费待处理 did
     const pendingDid = AppStorage.get<string>('pendingDeviceDetailDid');
     if (pendingDid !== undefined && pendingDid.length > 0) {
@@ -389,6 +381,24 @@ struct HomePage {
     this.loadLocalScenes();
     this.checkDueTimers();
     this.loadQuickSwitchStates();
+    this.refreshCardEntrySummary();
+  }
+
+  /** 「我的」页桌面卡片入口的副标题：已添加几张卡片 */
+  private cardEntrySummary(): string {
+    return this.cardEntryText;
+  }
+
+  private refreshCardEntrySummary(): void {
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      const count: number = CardConfigStore.all(context).length;
+      this.cardEntryText = count === 0
+        ? '选择家电放到桌面，随时查看与开关'
+        : `已添加 ${count} 张卡片，点此管理设备与样式`;
+    } catch (err) {
+      this.cardEntryText = '选择家电放到桌面，随时查看与开关';
+    }
   }
 
   /** 同步本地设备覆盖数据（改名 / 收藏 / 排序模式），详情页修改后返回时刷新 */
@@ -2457,8 +2467,9 @@ struct HomePage {
           }
           try {
             const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-            CardFormService.openCardManager(context, device, this.cardDimension, this.cardContent,
-              this.cardCustomText, this.cardTitle.length > 0 ? this.cardTitle : this.cardDeviceName);
+            CardFormService.openCardManager(context, device.did, device.name, this.cardDimension,
+              this.cardContent, this.cardCustomText,
+              this.cardTitle.length > 0 ? this.cardTitle : this.cardDeviceName);
             this.showCardSheet = false;
           } catch (err) {
             const message: string = err instanceof Error ? err.message : '打开卡片服务失败';
@@ -2748,6 +2759,7 @@ struct HomePage {
     } else if (this.activeTab === 3) {
       this.loadData(true, true);
       this.loadAccount();
+      this.refreshCardEntrySummary();
     } else {
       this.refreshHomeData();
     }
@@ -3746,6 +3758,42 @@ struct HomePage {
       .clip(true)
 
       Column() {
+        Row({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.square_on_square_fill'))
+            .fontSize(20)
+            .fontColor([MijiaOverviewCardText])
+          Column({ space: 2 }) {
+            Text('桌面卡片')
+              .fontFamily(this.appFontFamily('桌面卡片'))
+              .fontWeight(this.appFontWeight())
+              .fontSize(15)
+              .fontColor(MijiaOverviewCardText)
+            Text(this.cardEntrySummary())
+              .fontFamily(this.appFontFamily(this.cardEntrySummary()))
+              .fontWeight(this.appFontWeight())
+              .fontSize(11)
+              .fontColor('#6E8083')
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor([MijiaOverviewCardText])
+        }
+        .width('100%')
+        .padding(HwSpace.lg)
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          FeedbackLogService.recordOperation('UI', '进入桌面卡片管理页');
+          this.getUIContext().getRouter().pushUrl({ url: 'pages/CardServicePage' });
+        })
+
+        Divider()
+          .color('#E2EDED')
+          .margin({ left: HwSpace.lg, right: HwSpace.lg })
+
         Row({ space: 10 }) {
           SymbolGlyph($r('sys.symbol.leaf'))
             .fontSize(20)

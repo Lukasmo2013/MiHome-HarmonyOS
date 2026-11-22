@@ -6,6 +6,29 @@
 
 鸿蒙版米家移植 —— HarmonyOS NEXT 上的第三方米家客户端。**默认使用网页登录**：由小米官方页面完成账号密码 / 图形验证码 / 短信邮箱二次验证，App 只读取登录结果，不接触明文账号密码；同时保留扫码登录作为切换项。登录后即可管理家庭、房间与设备，控制米家生态里的智能硬件。UI 采用 HarmonyOS 7 雾玻璃 · 浅蓝绿设计语言：白底黑字卡片、轻描边、柔雾背景，素雅清爽。
 
+## 📸 界面预览
+
+<p align="center">
+  <img src="docs/images/home.png" width="235" alt="首页：家庭入口、概览与设备网格">
+  <img src="docs/images/mine.png" width="235" alt="我的：桌面卡片入口">
+  <img src="docs/images/card-manager.png" width="235" alt="桌面卡片管理中心">
+</p>
+<p align="center"><sub>首页 · 我的（桌面卡片入口）· 桌面卡片管理中心</sub></p>
+
+![桌面卡片四种规格](docs/images/widgets.png)
+
+<p align="center">
+  <img src="docs/images/login.png" width="235" alt="网页授权登录">
+  <img src="docs/images/family.png" width="235" alt="家庭选择浮层">
+</p>
+<p align="center"><sub>网页授权登录 · 家庭选择浮层</sub></p>
+
+完整图文介绍（网页登录原理、功能总览、技术架构、卡片数据链路、构建与安装）：
+**[docs/系统介绍.html](docs/系统介绍.html)** —— 本地双击即可打开，无需联网。
+
+> 图片由 `tools/gen_docs_previews.py` 按 `DesignTokens.ets` 的真实 token 与页面结构绘制生成，
+> 输出到 `docs/images/`，不含真实账号、设备或网络信息。改完视觉可重新运行该脚本刷新。
+
 ## 🔀 本次融合的内容
 
 | 来源 | 贡献 |
@@ -51,9 +74,12 @@
 ## 🧩 桌面卡片服务（最新）
 
 - 新增 `MiHomeFormAbility` + `form_config.json`，支持 **1x2 / 2x2 / 2x4 / 4x4** 四种规格。
-- 首页长按设备卡片 → **添加到桌面（卡片服务）** → 选择规格、内容（电源状态/在线状态/设备名称/型号/自定义文字）与卡片标题 → 打开系统卡片管理页放置。
+- **管理中心**：`我的 → 桌面卡片`（`pages/CardServicePage`）——搜索并选中任意家电、选展示内容与规格，右侧实时预览卡片效果，一键「添加到桌面」或「设为默认」（系统卡片面板添加时用这套样式）。
+- **管理能力**：列出桌面上已添加的卡片（设备、内容、规格、在线状态），可「载入」原配置重新调整、单张「刷新」、全局「全部刷新」；App 打开时也会把最新状态同步给所有卡片。
+- 首页长按设备卡片 → **添加到桌面（卡片服务）** 同样可用，两处共用 `models/CardConfigModels` 的规格与内容项，不会文案漂移。
+- **卡片视觉**：白底 + 深墨主值 + 浅蓝绿点缀，按规格切换版式（1*2 扁条 / 2*2 方形 / 2*4 宽卡 / 4*4 大方卡含房间与型号），电源按钮为圆形「开/关」，离线只灰化状态点、不灰整卡；空卡给出「我的 → 桌面卡片」引导。
 - 卡片支持点击进入设备详情、刷新状态；App 设备列表加载与快捷开关切换后会把状态写入共享存储并调用 `formProvider.updateForm` 刷新已添加卡片。
-- 相关文件：`entry/src/main/ets/entryformability/MiHomeFormAbility.ets`、`entry/src/main/ets/widget/pages/MiHomeDeviceCard.ets`、`entry/src/main/ets/services/CardFormService.ets`、`entry/src/main/ets/storage/CardConfigStore.ets`、`entry/src/main/ets/storage/CardStateStore.ets`。
+- 相关文件：`entry/src/main/ets/pages/CardServicePage.ets`、`entry/src/main/ets/models/CardConfigModels.ets`、`entry/src/main/ets/entryformability/MiHomeFormAbility.ets`、`entry/src/main/ets/widget/pages/MiHomeDeviceCard.ets`、`entry/src/main/ets/services/CardFormService.ets`、`entry/src/main/ets/storage/CardConfigStore.ets`、`entry/src/main/ets/storage/CardStateStore.ets`。
 
 ### 网页登录工作原理
 1. ArkWeb 打开小米官方 HTML 登录页（`serviceLogin`，不带 `_json`）。
@@ -79,7 +105,7 @@ hvigorw assembleHap
 - ⚠️ **真机安装诚实边界**：HarmonyOS 只信任华为官方根 CA 签发的调试证书。本地自签 CA 多数真机会以 `code:9568257 fail to verify pkcs7 file` 拒绝安装。要真机可装 `com.mihome.client`，**必须**用 DevEco Studio 登录华为开发者账号后 `File > Project Structure > Signing Configs > Automatically generate signature` 自动签名（AGC 会绑定 bundle-name + 开发者证书 + 设备 UDID）。
 - 未签名产物由 `hvigorw assembleHap` 生成在 `entry/build/default/outputs/default/`，供自行签名。
 
-自检：`node verify/check_fusion.mjs`（56 项，覆盖基座能力、网页登录、家庭选择、全局白底、首页家电卡、信息框线与卡片服务）。
+自检：`node verify/check_fusion.mjs`（78 项，覆盖基座能力、网页登录、家庭选择、全局白底、首页家电卡、信息框线、卡片中心与管理能力）。
 
 > 📲 **怎么装到手机上？** → 看 **[《鸿蒙设备侧载 HAP 超详细指南》](docs/侧载安装指南.md)**：手机设置、hdc 命令行 / DevEco / 无线安装三种方式、常见报错逐条排查。
 >

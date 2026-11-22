@@ -167,14 +167,68 @@ ok(cardFormServiceCode.includes('static rememberDefault') && cardFormServiceCode
   '卡片：打开系统管理页前先记住默认设备');
 ok(homePage.includes('cardDevicePicker()') && homePage.includes('this.cardDeviceDid = device.did;'),
   '卡片面板：可遍历选择任意设备');
-ok(homePage.includes("{ key: 'location', label: '所在房间' }")
-  && homePage.includes("{ key: 'power', label: '开关状态' }"),
-  '卡片面板：内容项含开关状态/所在房间');
+const cardModels = read('entry/src/main/ets/models/CardConfigModels.ets');
+ok(cardModels.includes("{ key: 'location', label: '所在房间'")
+  && cardModels.includes("{ key: 'power', label: '开关状态'")
+  && cardModels.includes('CARD_DIMENSIONS'),
+  '卡片面板：内容项含开关状态/所在房间，常量与首页共用');
 ok(cardViewCode.includes("action: 'call'") && cardViewCode.includes('cardToggleDid')
   && cardViewCode.includes('private toggle()'),
   '卡片：自带电源开关按钮（call 拉起 App 执行）');
 ok(homePage.includes('pendingCardToggleDid') && homePage.includes('consumePendingCardToggle'),
   '卡片开关：App 侧消费待切换设备');
+
+// ---- 本轮：我的页卡片服务入口 + 管理中心（选设备 / 管理 / 预览） ----
+const cardPage = read('entry/src/main/ets/pages/CardServicePage.ets');
+const cardRoute = read('entry/src/main/resources/base/profile/main_pages.json');
+
+ok(cardRoute.includes('pages/CardServicePage'), '卡片中心：页面已注册到 main_pages');
+ok(homePage.includes("pushUrl({ url: 'pages/CardServicePage' })") && homePage.includes("Text('桌面卡片')"),
+  '卡片中心：「我的」页有桌面卡片入口');
+ok(homePage.includes('cardEntrySummary()') && homePage.includes('refreshCardEntrySummary'),
+  '卡片中心：入口副标题显示已添加卡片数量');
+ok(cardPage.includes('this.DeviceSection()') && cardPage.includes('this.selectDevice(device)')
+  && cardPage.includes('visibleDevices()'),
+  '卡片中心：可搜索并选中任意家电设备');
+ok(cardPage.includes('this.PreviewCard()') && cardPage.includes('aspectRatio(cardDimensionRatio')
+  && cardPage.includes('this.previewValue()'),
+  '卡片中心：选择时实时预览卡片效果（含规格比例）');
+ok(cardPage.includes('CARD_CONTENT_OPTIONS') && cardPage.includes('CARD_DIMENSIONS'),
+  '卡片中心：展示内容与四种规格都可选');
+ok(cardPage.includes('CardFormService.openCardManager') && cardPage.includes('saveAsDefault()')
+  && cardPage.includes('rememberDefault'),
+  '卡片中心：可添加到桌面并设为系统面板默认样式');
+ok(cardPage.includes('CardFormService.runningCards') && cardPage.includes('loadCardConfig')
+  && cardPage.includes('refreshOne') && cardPage.includes('refreshAll'),
+  '卡片中心：已添加卡片可载入重配、单张刷新、全部刷新');
+ok(cardFormServiceCode.includes('static async runningCards') && cardFormServiceCode.includes('static async refreshAllCards')
+  && cardFormServiceCode.includes('static async refreshCard') && cardFormServiceCode.includes('static buildCardData'),
+  '卡片服务：提供运行卡片枚举、单卡/全部刷新与统一数据组装');
+ok(cardFormAbilityCode.includes('room: room') && cardFormAbilityCode.includes('model: model'),
+  '卡片提供方：额外下发房间与型号，供大卡展示');
+ok(cardViewCode.includes("@LocalStorageProp('room')") && cardViewCode.includes('private valueSize()')
+  && cardViewCode.includes('this.LargeBody()'),
+  '卡片视觉：按内容与规格自适应字号，大卡展示房间/型号');
+ok(cardViewCode.includes('this.EmptyBody()') && cardViewCode.includes('未选择设备'),
+  '卡片视觉：空卡给出引导而非空白');
+
+// 文档与界面预览（截图 / HTML / 生成脚本）
+const readme = read('README.md');
+const introDoc = read('docs/系统介绍.html');
+const previewScript = read('tools/gen_docs_previews.py');
+const shotFiles = ['home.png', 'mine.png', 'card-manager.png', 'widgets.png', 'login.png', 'family.png'];
+ok(introDoc.includes('MiHome') && introDoc.includes('images/widgets.png')
+  && introDoc.includes('桌面卡片服务'),
+  '介绍文档：docs/系统介绍.html 含截图与卡片章节');
+ok(shotFiles.every((f) => fs.existsSync(path.join(ROOT, 'docs/images', f))
+  && fs.statSync(path.join(ROOT, 'docs/images', f)).size > 20000),
+  '界面预览：六张截图均已生成且非空');
+ok(readme.includes('docs/系统介绍.html') && readme.includes('docs/images/home.png')
+  && readme.includes('docs/images/widgets.png'),
+  'README：引用介绍文档与预览图');
+ok(previewScript.includes('cairosvg') && previewScript.includes('DesignTokens.ets')
+  && previewScript.includes("OUT_DIR = os.path.join(ROOT, 'docs', 'images')"),
+  '预览脚本：可由设计 token 重新生成 docs/images');
 
 console.log('\n--- ' + pass + ' 项通过，' + fail + ' 项失败 ---');
 process.exit(fail === 0 ? 0 : 1);

@@ -145,6 +145,8 @@ export default class MiHomeFormAbility extends FormExtensionAbility {
         dimension: '2*2',
         content: 'power',
         deviceDid: '',
+        room: '',
+        model: '',
         updatedAt: 0
       });
     }
@@ -162,6 +164,8 @@ export default class MiHomeFormAbility extends FormExtensionAbility {
         dimension: cfg.dimensionText,
         content: cfg.content,
         deviceDid: '',
+        room: '',
+        model: '',
         updatedAt: 0
       });
     }
@@ -171,10 +175,14 @@ export default class MiHomeFormAbility extends FormExtensionAbility {
     let unit: string = '';
     let status: string = '待同步';
     let detail: string = '打开 App 同步设备状态';
+    let room: string = '';
+    let model: string = '';
 
     if (state !== null) {
       const s: CardDeviceState = state as CardDeviceState;
       status = s.online ? '在线' : '离线';
+      room = s.location.length > 0 ? s.location : '未分配房间';
+      model = s.model.length > 0 ? s.model : '未知型号';
       detail = s.location.length > 0 ? s.location : (s.model.length > 0 ? s.model : '已连接 MiHome');
       if (cfg.content === 'online') {
         value = status;
@@ -202,6 +210,8 @@ export default class MiHomeFormAbility extends FormExtensionAbility {
       dimension: cfg.dimensionText,
       content: cfg.content,
       deviceDid: cfg.deviceDid,
+      room: room,
+      model: model,
       updatedAt: state === null ? 0 : (state as CardDeviceState).updatedAt
     });
   }
