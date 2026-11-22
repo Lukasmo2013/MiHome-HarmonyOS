@@ -85,9 +85,10 @@ interface CardContentOption {
   label: string;
 }
 const CARD_CONTENT_OPTIONS: CardContentOption[] = [
-  { key: 'power', label: '电源状态' },
+  { key: 'power', label: '开关状态' },
   { key: 'online', label: '在线状态' },
   { key: 'name', label: '设备名称' },
+  { key: 'location', label: '所在房间' },
   { key: 'model', label: '设备型号' },
   { key: 'custom', label: '自定义文字' }
 ];
@@ -333,6 +334,9 @@ struct HomePage {
   @State overviewSkeletonPlaceholders: number[] = [0, 1, 2, 3];
   // 通知点击直达：EntryAbility 解析 want 后写入，首页消费后清空
   @StorageProp('pendingDeviceDetailDid') @Watch('onPendingDeviceDidChanged') pendingDeviceDetailDid: string = '';
+  // 桌面卡片开关按钮：EntryAbility 收到 call 参数后写入，首页执行切换
+  @StorageProp('pendingCardToggleDid') @Watch('onPendingCardToggleChanged') pendingCardToggleDid: string = '';
+  private cardToggleRetry: number = 0;
   private homeSwitchInFlight: boolean = false;
   private loadDataSeq: number = 0;
   private timerTickerId: number = -1;
@@ -360,6 +364,13 @@ struct HomePage {
       setTimeout((): void => {
         this.consumePendingDeviceDetail();
       }, 600);
+    }
+    // 冷启动经卡片开关进入：设备列表就绪后再执行切换
+    const pendingToggle = AppStorage.get<string>('pendingCardToggleDid');
+    if (pendingToggle !== undefined && pendingToggle.length > 0) {
+      setTimeout((): void => {
+        this.consumePendingCardToggle();
+      }, 900);
     }
   }
 
@@ -1288,6 +1299,36 @@ struct HomePage {
   /** 热启动经通知点入时由 @Watch 触发 */
   onPendingDeviceDidChanged(): void {
     this.consumePendingDeviceDetail();
+  }
+
+  /** 桌面卡片开关按钮：读取待切换设备并执行 */
+  onPendingCardToggleChanged(): void {
+    this.consumePendingCardToggle();
+  }
+
+  private consumePendingCardToggle(): void {
+    const did = AppStorage.get<string>('pendingCardToggleDid');
+    if (did === undefined || did.length === 0) {
+      return;
+    }
+    AppStorage.setOrCreate('pendingCardToggleDid', '');
+    const device = this.findDeviceByDid(this.devices, did);
+    if (device === null) {
+      // 设备列表可能还在加载，最多重试 3 次后放弃，避免死循环
+      if (this.cardToggleRetry < 3) {
+        this.cardToggleRetry++;
+        setTimeout((): void => {
+          AppStorage.setOrCreate('pendingCardToggleDid', did);
+        }, 1200);
+      } else {
+        this.cardToggleRetry = 0;
+        this.getUIContext().getPromptAction().showToast({ message: '设备未就绪，请在首页手动切换' });
+      }
+      return;
+    }
+    this.cardToggleRetry = 0;
+    Haptic.soft();
+    this.toggleQuickSwitch(device);
   }
 
   private formatCloudMessageTime(timeSec: number): string {
@@ -2242,6 +2283,84 @@ struct HomePage {
     return null;
   }
 
+  /** 卡片配置：设备选择器（遍历首页全部设备，含在线状态） */
+  @Builder
+  cardDevicePicker() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('选择设备')
+          .fontSize(13).fontColor(this.textPrimaryColor())
+          .layoutWeight(1)
+        Text(this.devices.length.toString() + ' 台')
+          .fontSize(11).fontColor(this.textSecondaryColor())
+      }
+      .width('100%')
+
+      if (this.devices.length === 0) {
+        Row({ space: 6 }) {
+          SymbolGlyph($r('sys.symbol.info_circle'))
+            .fontSize(14).fontColor(['#C08A2E'])
+          Text('设备列表还是空的，先回首页下拉刷新，或完成登录后再来添加卡片')
+            .fontSize(12).fontColor(this.textSecondaryColor())
+            .layoutWeight(1)
+        }
+        .width('100%')
+        .padding(10)
+        .borderRadius(HwRadius.control)
+        .backgroundColor('#FFF9EC')
+        .border({ width: 1, color: '#F0DFC0' })
+      } else {
+        Scroll() {
+          Row({ space: 8 }) {
+            ForEach(this.devices, (device: XiaomiDevice) => {
+              Row({ space: 6 }) {
+                Column()
+                  .width(6).height(6).borderRadius(3)
+                  .backgroundColor(device.online ? HwColor.online : '#A9BABA')
+                Text(this.homeDisplayName(device))
+                  .fontSize(12)
+                  .fontColor(this.cardDeviceDid === device.did ? '#FFFFFF' : this.textPrimaryColor())
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .constraintSize({ maxWidth: 120 })
+              }
+              .padding({ left: 11, right: 11, top: 7, bottom: 7 })
+              .borderRadius(HwRadius.pill)
+              .backgroundColor(this.cardDeviceDid === device.did ? HwColor.primary : '#FFFFFF')
+              .border({
+                width: 1,
+                color: this.cardDeviceDid === device.did ? HwColor.primary : MijiaCardBorder
+              })
+              .onClick(() => {
+                this.cardDeviceDid = device.did;
+                this.cardDeviceName = this.homeDisplayName(device);
+                if (this.cardTitle.length === 0 || this.cardTitleAuto()) {
+                  this.cardTitle = this.cardDeviceName;
+                }
+              })
+            }, (device: XiaomiDevice) => device.did)
+          }
+          .padding({ top: 2, bottom: 2 })
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .width('100%')
+      }
+    }
+    .alignItems(HorizontalAlign.Start)
+    .width('100%')
+  }
+
+  /** 标题是否仍等于设备名（用户没手动改过），用于切设备时同步更新 */
+  private cardTitleAuto(): boolean {
+    for (let i = 0; i < this.devices.length; i++) {
+      if (this.homeDisplayName(this.devices[i]) === this.cardTitle) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   @Builder
   cardConfigSheet() {
     Column({ space: 14 }) {
@@ -2257,9 +2376,7 @@ struct HomePage {
       }
       .width('100%')
 
-      Text('设备：' + this.cardDeviceName)
-        .fontSize(13).fontColor(this.textSecondaryColor())
-        .width('100%')
+      this.cardDevicePicker()
 
       Column({ space: 8 }) {
         Text('卡片规格')
@@ -2324,21 +2441,23 @@ struct HomePage {
         .borderRadius(HwRadius.control)
         .onChange((value: string) => { this.cardTitle = value; })
 
-      Button('打开卡片管理页')
+      Button(this.devices.length === 0 ? '暂无设备可添加' : '添加到桌面')
         .width('100%')
         .height(44)
         .fontSize(15)
         .fontColor('#FFFFFF')
-        .backgroundColor(HwColor.primary)
+        .backgroundColor(this.devices.length === 0 ? '#B9CBCD' : HwColor.primary)
         .borderRadius(HwRadius.control)
+        .enabled(this.devices.length > 0)
         .onClick(() => {
           const device: XiaomiDevice | null = this.cardDevice();
           if (device === null) {
-            this.getUIContext().getPromptAction().showToast({ message: '设备不存在或已离线' });
+            this.getUIContext().getPromptAction().showToast({ message: '请先选择一台设备' });
             return;
           }
           try {
-            CardFormService.openCardManager(device, this.cardDimension, this.cardContent,
+            const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+            CardFormService.openCardManager(context, device, this.cardDimension, this.cardContent,
               this.cardCustomText, this.cardTitle.length > 0 ? this.cardTitle : this.cardDeviceName);
             this.showCardSheet = false;
           } catch (err) {

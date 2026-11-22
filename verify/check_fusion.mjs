@@ -144,5 +144,35 @@ ok(msgCardCode.includes('MijiaCardBorder') && msgCardCode.includes('MijiaOvervie
 ok(designTokens.includes("MijiaCardBorder: string = '#E2EDED'"),
   '视觉：框线颜色与「我的」页一致');
 
+// ---- 卡片服务：设备为空 / 无可选项 的修复 ----
+const cardFormAbilityCode = read('entry/src/main/ets/entryformability/MiHomeFormAbility.ets');
+const cardStateStoreCode = read('entry/src/main/ets/storage/CardStateStore.ets');
+const cardConfigStoreCode = read('entry/src/main/ets/storage/CardConfigStore.ets');
+const cardFormServiceCode = read('entry/src/main/ets/services/CardFormService.ets');
+const cardViewCode = read('entry/src/main/ets/widget/pages/MiHomeDeviceCard.ets');
+
+ok(cardStateStoreCode.includes('static list(context: Context)') && cardStateStoreCode.includes('static first(context: Context)'),
+  '卡片：状态库可枚举设备（list/first），供提供方回落');
+ok(cardConfigStoreCode.includes('saveDefault') && cardConfigStoreCode.includes('readDefault')
+  && cardConfigStoreCode.includes("DEFAULT_KEY: string = 'default_card'"),
+  '卡片：默认配置可持久化（系统面板添加时回落）');
+ok(cardFormAbilityCode.includes('CardConfigStore.readDefault') && cardFormAbilityCode.includes('CardStateStore.first')
+  && cardFormAbilityCode.includes("value: '未选择设备'"),
+  '卡片：无 customize 时回落到默认设备，且空态有引导文案');
+ok(cardFormAbilityCode.includes("cfg.content === 'location'") && cardFormAbilityCode.includes('setFormNextRefreshTime'),
+  '卡片：支持房间内容项与定时自刷新');
+ok(cardFormServiceCode.includes('static rememberDefault') && cardFormServiceCode.includes('CardFormService.rememberDefault(context'),
+  '卡片：打开系统管理页前先记住默认设备');
+ok(homePage.includes('cardDevicePicker()') && homePage.includes('this.cardDeviceDid = device.did;'),
+  '卡片面板：可遍历选择任意设备');
+ok(homePage.includes("{ key: 'location', label: '所在房间' }")
+  && homePage.includes("{ key: 'power', label: '开关状态' }"),
+  '卡片面板：内容项含开关状态/所在房间');
+ok(cardViewCode.includes("action: 'call'") && cardViewCode.includes('cardToggleDid')
+  && cardViewCode.includes('private toggle()'),
+  '卡片：自带电源开关按钮（call 拉起 App 执行）');
+ok(homePage.includes('pendingCardToggleDid') && homePage.includes('consumePendingCardToggle'),
+  '卡片开关：App 侧消费待切换设备');
+
 console.log('\n--- ' + pass + ' 项通过，' + fail + ' 项失败 ---');
 process.exit(fail === 0 ? 0 : 1);

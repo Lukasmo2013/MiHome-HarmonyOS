@@ -57,4 +57,45 @@ export class CardStateStore {
       return null;
     }
   }
+
+  /**
+   * 枚举全部已缓存设备：在线优先，其次按更新时间倒序。
+   * 卡片提供方在「系统服务卡片面板直接添加、没有 customize」时用它回落默认设备，
+   * 避免生成一张只有占位符的空白卡片。
+   */
+  static list(context: Context): CardDeviceState[] {
+    const out: CardDeviceState[] = [];
+    try {
+      const all: Record<string, Object> = CardStateStore.store(context).getAllSync() as Record<string, Object>;
+      const keys: string[] = Object.keys(all);
+      for (let i = 0; i < keys.length; i++) {
+        if (keys[i].indexOf(KEY_PREFIX) !== 0) {
+          continue;
+        }
+        const raw: Object | undefined = all[keys[i]];
+        if (typeof raw !== 'string') {
+          continue;
+        }
+        try {
+          out.push(JSON.parse(raw as string) as CardDeviceState);
+        } catch (err) {
+          // 单条损坏跳过，不影响其余设备
+        }
+      }
+    } catch (err) {
+      // 存储不可用时返回空列表
+    }
+    out.sort((a: CardDeviceState, b: CardDeviceState): number => {
+      if (a.online !== b.online) {
+        return a.online ? -1 : 1;
+      }
+      return b.updatedAt - a.updatedAt;
+    });
+    return out;
+  }
+
+  static first(context: Context): CardDeviceState | null {
+    const list: CardDeviceState[] = CardStateStore.list(context);
+    return list.length > 0 ? list[0] : null;
+  }
 }

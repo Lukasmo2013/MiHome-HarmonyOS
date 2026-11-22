@@ -146,24 +146,35 @@ export default class EntryAbility extends UIAbility {
     this.handleNotificationWant(want);
   }
 
-  /** 解析通知 wantAgent 携带的设备 did，写入 AppStorage 由首页消费 */
+  /** 解析通知 / 桌面卡片 want 携带的参数，写入 AppStorage 由首页消费 */
   private handleNotificationWant(want: Want): void {
     try {
       const params = want.parameters;
       if (params === undefined) {
         return;
       }
+
+      // 1) 顶层参数：通知点入、卡片 call 动作
       const raw: Object | undefined = params['deviceDid'];
       if (typeof raw === 'string' && (raw as string).length > 0) {
         AppStorage.setOrCreate('pendingDeviceDetailDid', raw as string);
       }
-      // 桌面卡片 router 事件把参数放在 params 字符串里
+      const toggleTop: Object | undefined = params['cardToggleDid'];
+      if (typeof toggleTop === 'string' && (toggleTop as string).length > 0) {
+        AppStorage.setOrCreate('pendingCardToggleDid', toggleTop as string);
+      }
+
+      // 2) 卡片 postCardAction 会把参数塞进 params 字符串
       const nested: Object | undefined = params['params'];
       if (typeof nested === 'string' && (nested as string).length > 0) {
         const cardParams: Record<string, Object> = JSON.parse(nested as string) as Record<string, Object>;
         const did: Object | undefined = cardParams['deviceDid'];
         if (typeof did === 'string' && (did as string).length > 0) {
           AppStorage.setOrCreate('pendingDeviceDetailDid', did as string);
+        }
+        const toggle: Object | undefined = cardParams['cardToggleDid'];
+        if (typeof toggle === 'string' && (toggle as string).length > 0) {
+          AppStorage.setOrCreate('pendingCardToggleDid', toggle as string);
         }
       }
     } catch (err) {

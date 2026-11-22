@@ -52,11 +52,39 @@ export default class MiHomeFormAbility extends FormExtensionAbility {
       custom = customRaw as Record<string, Object>;
     }
 
-    const deviceDid: string = stringValue(custom, 'deviceDid', '');
-    const deviceName: string = stringValue(custom, 'deviceName', 'MiHome 设备');
-    const content: string = stringValue(custom, 'content', 'power');
-    const customText: string = stringValue(custom, 'customText', '');
-    const title: string = stringValue(custom, 'title', deviceName);
+    let deviceDid: string = stringValue(custom, 'deviceDid', '');
+    let deviceName: string = stringValue(custom, 'deviceName', '');
+    let content: string = stringValue(custom, 'content', 'power');
+    let customText: string = stringValue(custom, 'customText', '');
+    let title: string = stringValue(custom, 'title', '');
+
+    // 路径一：系统「服务卡片」面板直接添加时没有 customize，回落到 App 记住的默认配置
+    if (deviceDid.length === 0) {
+      const preset: CardConfig | null = CardConfigStore.readDefault(this.context);
+      if (preset !== null) {
+        const p: CardConfig = preset as CardConfig;
+        deviceDid = p.deviceDid;
+        deviceName = p.deviceName;
+        content = p.content;
+        customText = p.customText;
+        title = p.title;
+      }
+    }
+    // 路径二：连默认配置都没有（如首次安装直接加卡片），取缓存里第一台在线设备
+    if (deviceDid.length === 0) {
+      const firstState: CardDeviceState | null = CardStateStore.first(this.context);
+      if (firstState !== null) {
+        const s: CardDeviceState = firstState as CardDeviceState;
+        deviceDid = s.did;
+        deviceName = s.name;
+      }
+    }
+    if (deviceName.length === 0) {
+      deviceName = 'MiHome 设备';
+    }
+    if (title.length === 0) {
+      title = deviceName;
+    }
 
     if (formId.length > 0) {
       const config: CardConfig = {
@@ -69,57 +97,89 @@ export default class MiHomeFormAbility extends FormExtensionAbility {
         dimensionText: dimensionText(dimension)
       };
       CardConfigStore.save(this.context, config);
+      // 定时自刷新：即使 App 未运行，卡片也会按缓存状态重新渲染
+      try {
+        formProvider.setFormNextRefreshTime(formId, 30).catch(() => {
+          // 低版本不支持定时刷新时忽略
+        });
+      } catch (err) {
+        // 同步异常同样忽略
+      }
     }
     return this.buildBinding(formId);
   }
 
   private buildBinding(formId: string): formBindingData.FormBindingData {
     const config: CardConfig | null = CardConfigStore.read(this.context, formId);
-    const state: CardDeviceState | null = config === null
-      ? null
-      : CardStateStore.read(this.context, (config as CardConfig).deviceDid);
 
+    if (config === null) {
+      // 没有任何配置：给出可读的引导态，而不是一张只有 "--" 的空白卡
+      return formBindingData.createFormBindingData({
+        title: 'MiHome',
+        value: '未选择设备',
+        unit: '',
+        status: '待配置',
+        detail: '打开 App，长按设备 → 添加到桌面',
+        dimension: '2*2',
+        content: 'power',
+        deviceDid: '',
+        updatedAt: 0
+      });
+    }
+
+    const cfg: CardConfig = config as CardConfig;
+
+    if (cfg.deviceDid.length === 0) {
+      // 配置存在但未绑定到设备（系统面板添加且本地无设备缓存）
+      return formBindingData.createFormBindingData({
+        title: cfg.title.length > 0 ? cfg.title : 'MiHome',
+        value: '未选择设备',
+        unit: '',
+        status: '待配置',
+        detail: '打开 App，长按设备 → 添加到桌面',
+        dimension: cfg.dimensionText,
+        content: cfg.content,
+        deviceDid: '',
+        updatedAt: 0
+      });
+    }
+
+    const state: CardDeviceState | null = CardStateStore.read(this.context, cfg.deviceDid);
     let value: string = '--';
     let unit: string = '';
-    let status: string = '等待同步';
-    let detail: string = '点击卡片打开 MiHome';
-    let title: string = 'MiHome';
-    let deviceDid: string = '';
-    let content: string = 'power';
+    let status: string = '待同步';
+    let detail: string = '打开 App 同步设备状态';
 
-    if (config !== null) {
-      title = config.title.length > 0 ? config.title : config.deviceName;
-      deviceDid = config.deviceDid;
-      content = config.content;
-    }
-    if (config !== null && state !== null) {
-      const deviceState: CardDeviceState = state as CardDeviceState;
-      status = deviceState.online ? '在线' : '离线';
-      detail = deviceState.model.length > 0
-        ? (deviceState.location.length > 0 ? deviceState.model + ' · ' + deviceState.location : deviceState.model)
-        : (deviceState.location.length > 0 ? deviceState.location : '已连接 MiHome');
-      if (config.content === 'online') {
+    if (state !== null) {
+      const s: CardDeviceState = state as CardDeviceState;
+      status = s.online ? '在线' : '离线';
+      detail = s.location.length > 0 ? s.location : (s.model.length > 0 ? s.model : '已连接 MiHome');
+      if (cfg.content === 'online') {
         value = status;
-      } else if (config.content === 'name') {
-        value = deviceState.name;
-      } else if (config.content === 'model') {
-        value = deviceState.model;
-      } else if (config.content === 'custom') {
-        value = config.customText.length > 0 ? config.customText : deviceState.name;
+      } else if (cfg.content === 'name') {
+        value = s.name;
+      } else if (cfg.content === 'model') {
+        value = s.model.length > 0 ? s.model : '未知型号';
+      } else if (cfg.content === 'location') {
+        value = s.location.length > 0 ? s.location : '未分配房间';
+      } else if (cfg.content === 'custom') {
+        value = cfg.customText.length > 0 ? cfg.customText : s.name;
       } else {
-        value = deviceState.power ? '已开启' : '已关闭';
+        value = s.power ? '已开启' : '已关闭';
       }
+    } else if (cfg.content === 'name') {
+      value = cfg.deviceName;
     }
 
     return formBindingData.createFormBindingData({
-      title: title,
+      title: cfg.title.length > 0 ? cfg.title : cfg.deviceName,
       value: value,
       unit: unit,
       status: status,
       detail: detail,
-      dimension: config === null ? '2*2' : config.dimensionText,
-      content: content,
-      deviceDid: deviceDid,
+      dimension: cfg.dimensionText,
+      content: cfg.content,
+      deviceDid: cfg.deviceDid,
       updatedAt: state === null ? 0 : (state as CardDeviceState).updatedAt
     });
   }

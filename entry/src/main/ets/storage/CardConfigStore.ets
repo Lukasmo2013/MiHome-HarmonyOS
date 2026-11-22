@@ -7,6 +7,8 @@ import { preferences } from '@kit.ArkData';
 
 const STORE_NAME: string = 'mihome_card_config';
 const KEY_PREFIX: string = 'form_';
+/** App 侧记住的「下次添加卡片用哪台设备/哪种内容」；key 不带 form_ 前缀，不会被 all() 当成卡片实例 */
+const DEFAULT_KEY: string = 'default_card';
 
 export interface CardConfig {
   formId: string;
@@ -52,6 +54,29 @@ export class CardConfigStore {
       store.flushSync();
     } catch (err) {
       // ignore
+    }
+  }
+
+  /** 记录默认卡片配置：系统「服务卡片」面板直接添加时拿不到 customize，用它回落 */
+  static saveDefault(context: Context, config: CardConfig): void {
+    try {
+      const store: preferences.Preferences = CardConfigStore.store(context);
+      store.putSync(DEFAULT_KEY, JSON.stringify(config));
+      store.flushSync();
+    } catch (err) {
+      // ignore
+    }
+  }
+
+  static readDefault(context: Context): CardConfig | null {
+    try {
+      const raw: string = CardConfigStore.store(context).getSync(DEFAULT_KEY, '') as string;
+      if (raw.length === 0) {
+        return null;
+      }
+      return JSON.parse(raw) as CardConfig;
+    } catch (err) {
+      return null;
     }
   }
 

@@ -32,37 +32,69 @@ struct MiHomeDeviceCard {
     });
   }
 
+  /** 开关按钮：拉起 EntryAbility，由 App 执行真实下发并回写卡片 */
+  private toggle(): void {
+    postCardAction(this, {
+      action: 'call',
+      abilityName: 'EntryAbility',
+      params: JSON.stringify({ cardToggleDid: this.deviceDid })
+    });
+  }
+
+  private powerOn(): boolean {
+    return this.value === '已开启';
+  }
+
   @Builder
   Header() {
     Row({ space: 8 }) {
-      Stack({ alignContent: Alignment.Center }) {
-        Text('M')
+      Row({ space: 8 }) {
+        Stack({ alignContent: Alignment.Center }) {
+          Text('M')
+            .fontSize(13)
+            .fontWeight(FontWeight.Bold)
+            .fontColor('#FFFFFF')
+        }
+        .width(24)
+        .height(24)
+        .borderRadius(8)
+        .backgroundColor('#3E9AA6')
+
+        Text(this.title)
           .fontSize(13)
-          .fontWeight(FontWeight.Bold)
-          .fontColor('#FFFFFF')
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#172226')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
       }
-      .width(24)
-      .height(24)
-      .borderRadius(8)
-      .backgroundColor('#3E9AA6')
+      .layoutWeight(1)
+      .onClick((): void => { this.openApp(); })
 
-      Text(this.title)
-        .fontSize(13)
-        .fontWeight(FontWeight.Medium)
-        .fontColor('#172226')
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
+      if (this.dimension !== '1*2') {
+        Text(this.status)
+          .fontSize(10)
+          .fontColor(this.status === '在线' ? '#2AA98C' : '#6E8083')
+          .padding({ left: 7, right: 7, top: 3, bottom: 3 })
+          .borderRadius(999)
+          .backgroundColor('#F2F8F8')
+      }
 
-      Text(this.status)
-        .fontSize(10)
-        .fontColor(this.status === '在线' ? '#2AA98C' : '#6E8083')
-        .padding({ left: 7, right: 7, top: 3, bottom: 3 })
-        .borderRadius(999)
-        .backgroundColor('#F2F8F8')
+      // 电源开关：直接下发，不必先打开 App
+      if (this.deviceDid.length > 0) {
+        Text(this.powerOn() ? '关' : '开')
+          .fontSize(11)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.powerOn() ? '#FFFFFF' : '#3E9AA6')
+          .textAlign(TextAlign.Center)
+          .width(26)
+          .height(26)
+          .borderRadius(13)
+          .backgroundColor(this.powerOn() ? '#3E9AA6' : '#EAF6F7')
+          .onClick((): void => { this.toggle(); })
+      }
     }
     .width('100%')
-    .onClick((): void => { this.openApp(); })
   }
 
   @Builder
@@ -97,7 +129,27 @@ struct MiHomeDeviceCard {
     Column({ space: 10 }) {
       this.Header()
 
-      if (this.dimension === '1*2') {
+      if (this.deviceDid.length === 0) {
+        // 还没绑定设备：给出引导，而不是一张只有占位符的空白卡
+        Column({ space: 6 }) {
+          Text('＋')
+            .fontSize(20)
+            .fontColor('#3E9AA6')
+          Text('未选择设备')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#172226')
+          Text('打开 MiHome，长按设备 → 添加到桌面')
+            .fontSize(10)
+            .fontColor('#6E8083')
+            .maxLines(2)
+            .textAlign(TextAlign.Center)
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .justifyContent(FlexAlign.Center)
+        .onClick((): void => { this.openApp(); })
+      } else if (this.dimension === '1*2') {
         Row({ space: 8 }) {
           Text(this.value)
             .fontSize(18)

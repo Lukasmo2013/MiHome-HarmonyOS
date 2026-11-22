@@ -27,9 +27,15 @@ export class CardFormService {
     return formInfo.FormDimension.Dimension_2_2;
   }
 
-  /** 长按菜单入口：打开系统卡片管理页，用户选择放置位置 */
-  static openCardManager(device: XiaomiDevice, dimensionLabel: string,
+  /**
+   * 长按菜单 / 配置面板入口：
+   * 1) 先把当前选择写入「默认卡片配置」，系统服务卡片面板直接添加时由 FormAbility 回落使用；
+   * 2) 再打开系统卡片管理页，由用户选择放置位置。
+   */
+  static openCardManager(context: Context, device: XiaomiDevice, dimensionLabel: string,
     content: string, customText: string, title: string): void {
+    CardFormService.rememberDefault(context, device, dimensionLabel, content, customText, title);
+
     const want: Want = {
       bundleName: BUNDLE_NAME,
       abilityName: FORM_ABILITY,
@@ -47,6 +53,20 @@ export class CardFormService {
       }
     };
     formProvider.openFormManager(want);
+  }
+
+  /** 记住「下次添加卡片用哪台设备 / 哪种内容」，供系统面板添加时回落 */
+  static rememberDefault(context: Context, device: XiaomiDevice, dimensionLabel: string,
+    content: string, customText: string, title: string): void {
+    CardConfigStore.saveDefault(context, {
+      formId: 'default',
+      deviceDid: device.did,
+      deviceName: device.name.length > 0 ? device.name : 'MiHome 设备',
+      content: content,
+      customText: customText,
+      title: title,
+      dimensionText: dimensionLabel
+    });
   }
 
   static buildStates(devices: XiaomiDevice[],
@@ -90,23 +110,27 @@ export class CardFormService {
         }
         const state: CardDeviceState | null = CardStateStore.read(context, config.deviceDid);
         let value: string = '--';
-        let status: string = '等待同步';
-        let detail: string = '点击卡片打开 MiHome';
+        let status: string = '待同步';
+        let detail: string = '打开 App 同步设备状态';
         if (state !== null) {
-          status = (state as CardDeviceState).online ? '在线' : '离线';
-          detail = (state as CardDeviceState).model.length > 0
-            ? (state as CardDeviceState).model : ('点击卡片打开 MiHome');
+          const s: CardDeviceState = state as CardDeviceState;
+          status = s.online ? '在线' : '离线';
+          detail = s.location.length > 0 ? s.location : (s.model.length > 0 ? s.model : '已连接 MiHome');
           if (config.content === 'online') {
             value = status;
           } else if (config.content === 'name') {
-            value = (state as CardDeviceState).name;
+            value = s.name;
           } else if (config.content === 'model') {
-            value = (state as CardDeviceState).model;
+            value = s.model.length > 0 ? s.model : '未知型号';
+          } else if (config.content === 'location') {
+            value = s.location.length > 0 ? s.location : '未分配房间';
           } else if (config.content === 'custom') {
-            value = config.customText.length > 0 ? config.customText : (state as CardDeviceState).name;
+            value = config.customText.length > 0 ? config.customText : s.name;
           } else {
-            value = (state as CardDeviceState).power ? '已开启' : '已关闭';
+            value = s.power ? '已开启' : '已关闭';
           }
+        } else if (config.content === 'name') {
+          value = config.deviceName;
         }
         const data: formBindingData.FormBindingData = formBindingData.createFormBindingData({
           title: config.title.length > 0 ? config.title : config.deviceName,
