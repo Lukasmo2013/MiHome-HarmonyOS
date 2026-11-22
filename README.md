@@ -1,6 +1,6 @@
-# MiHome（com.mihome.client）· miha-fusion（网页登录融合版）
+# MiHome（网页登录融合版）
 
-> **品牌名 MiHome、包名 `com.mihome.client`、版权 莫洁安**，图标为米家风格浅蓝绿底白色 M 标志。
+> **品牌名 MiHome、包名 `com.mihome.client`、图标为米家风格浅蓝绿底白色 M 标志。
 > 本工程 = **米居 MiJu**（基座，[SKL-666666/MiHome-Client](https://github.com/SKL-666666/MiHome-Client)，其本身基于 [MrCashmere/miha_hm](https://github.com/MrCashmere/miha_hm)「鸿米家」二次开发）+ **网页登录能力**（从本工作区的米家 HarmonyOS App 移植）融合而成的新 App。
 > 两个上游均为 **GPL-3.0-or-later**，本工程沿用该许可（见 `LICENSE`）。
 
